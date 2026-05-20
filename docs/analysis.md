@@ -46,17 +46,19 @@ By default, the script prints a per-task summary table with success rate, score,
 | Flag | Description |
 |------|-------------|
 | `--csv` | Print results in CSV format (tab-separated) for copy-pasting into spreadsheets |
-| `--csv-compact` | CSV with stddev in the same column as the value, e.g., `-9.14 (± 4.72)` (implies `--csv`) |
+| `--show-stddev-compact` | Stddev shown inline as `value (± stddev)` instead of separate columns. CSV mode only; behaves like `--show-stddev` in non-CSV mode (implies `--csv`) |
 | `--output-csv FILE` | Write CSV output to a file instead of stdout. If the path is relative, it is placed inside the first data folder (implies `--csv`) |
 
 ### Display Options
 
 | Flag | Description |
 |------|-------------|
-| `--verbose` | Show stddev columns, wrong object details, and episode IDs |
-| `--no-metrics` | Hide trajectory metrics columns (EE SPARC, Path Length, Speed) |
-| `--timing` | Show wall-clock timing columns: average iteration speed (it/s) and wall time per episode in minutes (Walltime(m)) |
+| `--verbose` | Show all metrics + stddev columns (equivalent to `--metrics all --show-stddev`) |
+| `--metrics NAME [NAME ...]` | Pick which optional columns to show. Names: `score`, `time`, `wrongobj`, `sparc`, `pathlen`, `speed`, `timing`, `succ-eps`, `all`. Default: `score time sparc pathlen speed`. Note: `sparc`/`pathlen`/`speed` are grouped — selecting any one shows all three. |
+| `--show-stddev` | Show stddev as separate columns next to value columns |
 | `--exclude-containers` | Exclude container objects (bin, crate, box, etc.) from wrong-object-grabbed counts |
+
+The success rate is always shown alongside its 95% Beta-posterior credible interval (`[lcb-ucb]` in human-readable mode; `LCB %` and `UCB %` columns in CSV mode). The interval comes from `Beta(k+1, n-k+1)` with a uniform prior — wide at small N (e.g. 10/10 → `[71.5-99.8]`), tight at large N. See [Statistical Significance and Adaptive Sampling](statistical_significance.md) for details and for the `--num-episodes-adaptive` stopping rule that targets a fixed CI width.
 
 ### Examples
 
@@ -88,11 +90,14 @@ python analysis/read_results.py 2025-09-02_13-15-34 --by-instruction-type
 # Export to CSV file
 python analysis/read_results.py 2025-09-02_13-15-34 --output-csv summary.csv
 
-# Compact CSV for spreadsheets (stddev in same column)
-python analysis/read_results.py 2025-09-02_13-15-34 --csv-compact
+# Compact CSV for spreadsheets (stddev inline as 'value (± stddev)')
+python analysis/read_results.py 2025-09-02_13-15-34 --csv --show-stddev-compact
 
-# Summary without trajectory metrics
-python analysis/read_results.py 2025-09-02_13-15-34 --no-metrics
+# Summary with only score and time columns (no trajectory metrics)
+python analysis/read_results.py 2025-09-02_13-15-34 --metrics score time
+
+# Show all columns + stddev
+python analysis/read_results.py 2025-09-02_13-15-34 --metrics all --show-stddev
 
 # Wrong object analysis, excluding containers
 python analysis/read_results.py 2025-09-02_13-15-34 --by-wrong-objects --exclude-containers
@@ -100,16 +105,16 @@ python analysis/read_results.py 2025-09-02_13-15-34 --by-wrong-objects --exclude
 
 ### Sample Output
 
-The default output includes trajectory metrics columns (EE SPARC, Path Length, Speed):
+The default output includes the success rate, its 95% Beta credible interval, and trajectory metrics columns (EE SPARC, Path Length, Speed):
 
 ```
 ---------------------------------------------- EXPERIMENT SUMMARY ----------------------------------------------
-Task Name                Success    %     Score(total) Score(fail) Time(s) EE SPARC PathLen(m) Speed(cm/s)
+Task Name                Success    %     95% CI         Score(total) Score(fail) Time(s) EE SPARC PathLen(m) Speed(cm/s)
 ----------------------------------------------------------------------------------------------------------------
-TOTAL (2 tasks)          6/20      30.0%  0.400        0.143       65.59   -12.86   7.33       2.9
+TOTAL (2 tasks)          6/20      30.0%  [13.7-50.7]    0.400        0.143       65.59   -12.86   7.33       2.9
 ----------------------------------------------------------------------------------------------------------------
-AnimalsInBinTask         0/10      0.0%   0.000        0.000       -       -7.49    2.02       2.2
-AppleAndYogurtInBowlTask 6/10      60.0%  0.800        0.500       65.59   -18.23   12.63      3.5
+AnimalsInBinTask         0/10      0.0%   [0.2-28.5]     0.000        0.000       -       -7.49    2.02       2.2
+AppleAndYogurtInBowlTask 6/10      60.0%  [30.8-83.3]    0.800        0.500       65.59   -18.23   12.63      3.5
 ----------------------------------------------------------------------------------------------------------------
 ```
 
@@ -119,7 +124,7 @@ Score columns:
 
 `Score(total) = success_rate + (1 − success_rate) · Score(fail)`.
 
-`EE SPARC` is the spectral arc length (smoothness) metric; more negative = less smooth. Stationary trajectories return NaN and are excluded from the average. Use `--no-metrics` to hide the trajectory metrics columns.
+`EE SPARC` is the spectral arc length (smoothness) metric; more negative = less smooth. Stationary trajectories return NaN and are excluded from the average. Use `--metrics score time` (or any subset omitting `sparc`/`pathlen`/`speed`) to hide the trajectory metrics columns.
 
 ---
 

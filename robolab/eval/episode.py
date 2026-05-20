@@ -3,8 +3,10 @@
 
 """Policy episode runner for RoboLab.
 
-This module contains the run_episode function that executes policy-controlled
-episodes using various policy backends (pi0, gr00t, dreamzero).
+This module contains the run_episode function that executes a single
+policy-controlled episode given any :class:`InferenceClient` subclass.
+The function stays policy-agnostic — concrete clients live under
+``policies/<policy>/client.py``.
 
 Supports multi-env: one PolicyClient per env, per-env video writers,
 actions inferred per active env and stacked for env.step().
@@ -59,8 +61,9 @@ from robolab.eval.base_client import InferenceClient
 def run_episode(env, env_cfg, episode, client: InferenceClient, *, headless=False, save_videos=True, video_mode="all"):
     """Run a policy-controlled episode across all parallel envs.
 
-    The policy client is constructed by the caller (typically via
-    :func:`robolab.eval.create_client`). This function stays policy-agnostic.
+    The policy client is constructed by the caller (typically a per-policy
+    runner under ``policies/<policy>/run.py``). This function stays
+    policy-agnostic.
 
     Args:
         env: The environment instance (RobolabEnv with num_envs >= 1)

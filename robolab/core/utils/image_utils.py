@@ -1,13 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: CC-BY-NC-4.0
 
-"""Image preprocessing utilities for policy clients.
+"""Image preprocessing utilities (resize with padding, etc.).
 
 Vendored from openpi_client.image_tools (original at
 ``openpi/packages/openpi-client/src/openpi_client/image_tools.py``) so that
-individual backends inside :mod:`robolab_policy_client` can share the same
-resize behavior without forcing ``openpi_client`` as a runtime dep for
-non-openpi backends. Kept semantically identical to the upstream.
+inference clients can share the same resize behavior without forcing
+``openpi_client`` as a runtime dep for non-openpi backends. Kept
+semantically identical to the upstream.
 """
 
 import numpy as np

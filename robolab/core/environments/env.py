@@ -42,12 +42,23 @@ class RobolabEnv(ManagerBasedRLEnv):
         """Load managers; replace upstream RecorderManager with the streaming-
         capable RobolabRecorderManager.
 
-        super().load_managers() builds an upstream RecorderManager which we
-        immediately overwrite below. The wasted construction is benign
-        (RecorderManager.__init__ does no IO until set_hdf5_file() is called)
-        and the explicit replacement avoids needing a global monkey-patch.
+        super().load_managers() builds an upstream RecorderManager whose
+        constructor eagerly creates the HDF5 file at ``cfg.dataset_filename``
+        (default ``data.hdf5``) — we don't want that, because we replace the
+        manager below with RobolabRecorderManager (which opens the real
+        per-run file lazily via ``set_hdf5_file("run_N.hdf5")``). To suppress
+        the eager file creation, temporarily set ``cfg.recorders`` to None
+        so upstream's RecorderManager.__init__ takes its
+        ``if not cfg: return`` early-exit path; then restore cfg before
+        instantiating our manager.
         """
-        super().load_managers()
+        recorders_cfg = self.cfg.recorders
+        self.cfg.recorders = None
+        try:
+            super().load_managers()
+        finally:
+            self.cfg.recorders = recorders_cfg
+
         self.recorder_manager = RobolabRecorderManager(self.cfg.recorders, self)
 
     def step(self, action):

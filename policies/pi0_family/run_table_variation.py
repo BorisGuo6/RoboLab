@@ -3,19 +3,11 @@
 # isort: skip_file
 
 """
-Run policy evaluation across a TASK × BACKGROUND matrix.
-
-This script registers every (task, background) combination as a separate env
-(via auto_register_droid_envs_bg_variations) and evaluates each one. Use it to
-measure robustness of the SAME task across MANY backgrounds.
-
-For "give each task a different random background in a single benchmark pass"
-(per-task random, NOT a matrix sweep), use `run_eval.py --randomize-background`
-instead. See docs/background.md → "Choosing a Background Strategy".
+Run policy evaluation with table fixture variations.
 
 Usage:
-    $ python run_eval_background_variation.py --headless
-    $ python run_eval_background_variation.py --task BananaInBowlTableTask --headless
+    $ python run_eval_table_variation.py --headless
+    $ python run_eval_table_variation.py --task BananaInBowlTableTask --headless
 
 Output:
     Results are saved to: output/<output_folder_name>/
@@ -26,6 +18,7 @@ import cv2 # Must import this before isaaclab. Do not remove
 import os
 import traceback
 import sys
+from itertools import product
 from isaaclab.app import AppLauncher
 from robolab.constants import get_timestamp, DEFAULT_TASK_SUBFOLDERS # noqa
 
@@ -39,8 +32,8 @@ parser.add_argument("--tag", nargs='+', default=None,
                        help="List of tags of tasks to evaluate on ")
 parser.add_argument("--task-dirs", nargs='+', default=DEFAULT_TASK_SUBFOLDERS,
                        help="List of task directories to evaluate on")
-parser.add_argument("--policy", choices=["pi0", "pi0_fast", "paligemma", "paligemma_fast", "pi05", "gr00t", "dreamzero", "molmo", "openvla", "openvla_oft"], default="pi05",
-                       help="Action-prediction backend to use (default: pi05)")
+parser.add_argument("--policy", choices=["pi0", "pi0_fast", "paligemma", "paligemma_fast", "pi05"], default="pi05",
+                       help="Pi0-family variant to use (default: pi05)")
 parser.add_argument("--num-runs", "--num_runs", type=int, default=1,
                        help="Number of sequential runs per task (default: 1). Total episodes = num_runs * num_envs. Prefer increasing --num_envs for more episodes. Only increase --num-runs if you run out of GPU memory with the desired num_envs.")
 parser.add_argument("--enable-subtask", "--enable_subtask", action="store_true",
@@ -63,11 +56,12 @@ args_cli.save_videos = True
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
+import omni.usd # noqa
 from robolab.constants import PACKAGE_DIR, set_output_dir # noqa
 from robolab.core.environments.runtime import create_env # noqa
-from robolab.eval import create_client, run_episode, summarize_run # noqa
-from robolab.registrations.droid_jointpos.auto_env_registrations_bg_variations import auto_register_droid_envs_bg_variations # noqa
-from robolab.core.environments.factory import get_envs_by_tag # noqa
+from robolab.eval import run_episode, summarize_run # noqa
+from policies.pi0_family.client import Pi0DroidJointposClient # noqa
+from robolab.core.environments.factory import get_envs # noqa
 from robolab.core.logging.results import check_all_episodes_complete, check_run_complete # noqa
 from robolab.core.logging.results import init_experiment, summarize_experiment_results # noqa
 import robolab.constants # noqa
@@ -77,32 +71,111 @@ robolab.constants.RECORD_IMAGE_DATA = args_cli.record_image_data
 robolab.constants.VERBOSE = args_cli.enable_verbose
 robolab.constants.DEBUG = args_cli.enable_debug
 
-auto_register_droid_envs_bg_variations(task_dirs=args_cli.task_dirs)
+from robolab.registrations.droid.auto_env_registrations_jointpos import auto_register_droid_envs # noqa
+auto_register_droid_envs(task_dirs=args_cli.task_dirs)
+
+########################################################
+# Table Variation Configuration
+########################################################
+TABLE_MATERIALS = [
+    "Oak",
+    "Walnut_Planks",
+    "Bamboo",
+    "Black_Matte",
+]
+
+
+def change_table_material(material_name: str):
+    """Change the table top material at runtime by modifying the material binding."""
+    from pxr import UsdShade
+
+    stage = omni.usd.get_context().get_stage()
+    if not stage:
+        print("Warning: No stage available")
+        return False
+
+    table_top_prim = None
+    for prim in stage.Traverse():
+        prim_path = str(prim.GetPath()).lower()
+        prim_name = prim.GetName().lower()
+        if prim_name == "top" and "table" in prim_path and "franka" not in prim_path:
+            table_top_prim = prim
+            break
+
+    if table_top_prim is None:
+        for prim in stage.Traverse():
+            prim_path = str(prim.GetPath()).lower()
+            if "table" in prim_path and "franka" not in prim_path and prim.GetTypeName() in ["Cube", "Mesh"]:
+                table_top_prim = prim
+                print(f"Found alternative table mesh: {prim.GetPath()}")
+                break
+
+    if table_top_prim is None:
+        print("Warning: No table mesh found to change material")
+        return False
+
+    material_path_patterns = [
+        f"/Root/Looks/{material_name}",
+        f"/World/Looks/{material_name}",
+        f"/world/Looks/{material_name}",
+    ]
+
+    material_prim = None
+    for pattern in material_path_patterns:
+        potential_prim = stage.GetPrimAtPath(pattern)
+        if potential_prim.IsValid():
+            material_prim = potential_prim
+            break
+
+    if material_prim is None:
+        for prim in stage.Traverse():
+            if prim.GetName() == material_name and prim.GetTypeName() == "Material":
+                material_prim = prim
+                break
+
+    if material_prim is None:
+        print(f"Warning: Material '{material_name}' not found in stage")
+        return False
+
+    material = UsdShade.Material(material_prim)
+    binding_api = UsdShade.MaterialBindingAPI(table_top_prim)
+    binding_api.Bind(material, UsdShade.Tokens.weakerThanDescendants)
+
+    print(f"Changed table material to: {material_name} ({material_prim.GetPath()})")
+    return True
+
+
+########################################################
 
 
 def main():
     """Main function."""
     if args_cli.output_folder_name is None:
-        args_cli.output_folder_name = get_timestamp() + f"_{args_cli.policy}_background_variation"
+        args_cli.output_folder_name = get_timestamp() + f"_{args_cli.policy}_table_variation"
 
     output_dir = os.path.join(PACKAGE_DIR, "output", args_cli.output_folder_name)
     os.makedirs(output_dir, exist_ok=True)
 
-    task_envs = get_envs_by_tag("background_variations")
+    if args_cli.task:
+        base_task_envs = get_envs(task=args_cli.task)
+    elif args_cli.tag:
+        base_task_envs = get_envs(tag=args_cli.tag)
+    else:
+        base_task_envs = get_envs()
 
     num_envs = args_cli.num_envs
     num_runs = args_cli.num_runs
     total_episodes = num_runs * num_envs
 
     print(f"Output directory: {output_dir}")
-    print(f"Running {len(task_envs)} background variation environments, {total_episodes} episodes each")
+    print(f"Running {len(base_task_envs)} environments x {len(TABLE_MATERIALS)} materials")
+    print(f"{total_episodes} episodes per combination ({num_runs} runs x {num_envs} envs)")
 
     episode_results_file, episode_results = init_experiment(output_dir)
 
-    for task_env in task_envs:
-
-        bg_name = task_env.split("_bg_")[-1] if "_bg_" in task_env else "default"
-        task_name = task_env.split("_bg_")[0]
+    for base_task_env, table_material in product(base_task_envs, TABLE_MATERIALS):
+        task_env = f"{base_task_env}_{table_material}"
+        task_name = base_task_env
         scene_output_dir = os.path.join(output_dir, task_env)
         os.makedirs(scene_output_dir, exist_ok=True)
         set_output_dir(scene_output_dir)
@@ -111,16 +184,16 @@ def main():
             print(f"\033[96m[RoboLab] Task `{task_env}` already done. Skipping.\033[0m")
             continue
 
-        env, env_cfg = create_env(
-            scene=task_env,
+        env, env_cfg = create_env(base_task_env,
             device=args_cli.device,
             num_envs=num_envs,
             use_fabric=True,
-            policy=args_cli.policy,
-        )
+            policy=args_cli.policy)
 
-        client = create_client(
-            args_cli.policy,
+        change_table_material(table_material)
+
+        client = Pi0DroidJointposClient(
+            policy_variant=args_cli.policy,
             remote_host=args_cli.remote_host,
             remote_port=args_cli.remote_port,
         )
@@ -132,7 +205,7 @@ def main():
                 print(f"\033[96m[RoboLab] Task `{task_env}` run `{run_idx}` already done. Skipping.\033[0m")
                 continue
 
-            run_name = task_env + f"_{run_idx}"
+            run_name = f"{task_env}_{run_idx}"
             print(f"\033[96m[RoboLab] Running {run_name}: '{env_cfg.instruction}' (run {run_idx}, {num_envs} envs)\033[0m")
 
             env_results, msgs, timing = run_episode(env=env,
@@ -158,7 +231,7 @@ def main():
                 enable_subtask_progress=robolab.constants.ENABLE_SUBTASK_PROGRESS_CHECKING,
                 task_name=task_name,
                 extra_fields={
-                    "background": bg_name,
+                    "table_material": table_material,
                     "lighting_intensity": 5000,
                     "lighting_color": "natural",
                     "lighting_type": "sphere",

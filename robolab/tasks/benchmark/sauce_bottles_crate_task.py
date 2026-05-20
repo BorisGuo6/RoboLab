@@ -26,7 +26,7 @@ class Terminations:
 
 @dataclass
 class SauceBottlesCrateTask(Task):
-    contact_object_list = ["bbq_sauce_bottle", "purple_crate", "table"]
+    contact_object_list = ["bbq_sauce_bottle", "purple_crate", "table", "ceramic_mug", "salad_dressing_bottle"]
     scene = import_scene("bottles_crate.usda", contact_object_list)
     terminations = Terminations
     instruction = {

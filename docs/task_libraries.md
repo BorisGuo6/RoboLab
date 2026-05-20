@@ -96,12 +96,11 @@ This writes `_metadata/task_report.txt` alongside the JSON and CSV files.
 To check that all tasks have valid contact lists, terminations, and scene references:
 
 ```bash
-# Validate your own task library
-python scripts/check_tasks_valid.py --tasks-folder /path/to/my_task_library/tasks
-
-# Validate the built-in benchmark tasks (default)
-python scripts/check_tasks_valid.py
+# Validate the built-in benchmark tasks
+uv run pytest tests/test_tasks_valid.py -v
 ```
+
+To validate a custom task library outside `robolab/tasks/benchmark/`, point `find_task_files` at it from a script — see `tests/test_tasks_valid.py` for the calling pattern.
 
 ## Keeping Metadata Up to Date
 

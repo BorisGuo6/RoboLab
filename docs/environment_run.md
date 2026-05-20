@@ -84,7 +84,7 @@ from robolab.core.logging.recorder_manager import patch_recorder_manager
 patch_recorder_manager()
 
 # Register environments (after patching)
-from robolab.registrations.droid_jointpos.auto_env_registrations import auto_register_droid_envs
+from robolab.registrations.droid.auto_env_registrations_jointpos import auto_register_droid_envs
 auto_register_droid_envs()
 ```
 
@@ -134,10 +134,10 @@ env_cfg = parse_env_cfg("BananaInBowlTask",
 
 ```bash
 # 20 episodes total: 20 envs × 1 run (if VRAM allows)
-python examples/policy/run_eval.py --headless --num_envs 20
+python policies/pi0_family/run.py --headless --num_envs 20
 
 # 20 episodes total: 10 envs × 2 runs (if 20 doesn't fit)
-python examples/policy/run_eval.py --headless --num_envs 10 --num-runs 2
+python policies/pi0_family/run.py --headless --num_envs 10 --num-runs 2
 ```
 
 **Multi-env episode handling:** With `num_envs > 1`, each environment runs an independent episode. The built-in `run_eval.py` handles per-env termination, video recording, and result logging automatically. If you are writing a custom evaluation loop, see `robolab/eval/episode.py` for the multi-env episode runner pattern (`from robolab.eval import run_episode`), which manages per-env video writers, independent termination tracking, and batched policy inference.
@@ -235,7 +235,7 @@ from robolab.core.utils.video_utils import VideoWriter
 
 # ── Register environments ─────────────────────────────────────────────────
 # Option A: Use the built-in DROID joint-position registration
-from robolab.registrations.droid_jointpos.auto_env_registrations import auto_register_droid_envs
+from robolab.registrations.droid.auto_env_registrations_jointpos import auto_register_droid_envs
 auto_register_droid_envs(task_dirs=args_cli.task_dirs, task=args_cli.task)
 
 # Option B: Use your own custom registration (see environment_registration.md)
@@ -361,7 +361,7 @@ if __name__ == "__main__":
 
 ## `run_eval.py` CLI Reference
 
-The built-in `examples/policy/run_eval.py` supports the full set of evaluation features:
+The built-in `policies/pi0_family/run.py` supports the full set of evaluation features:
 
 | Flag | Description | Default |
 |------|-------------|---------|
@@ -388,28 +388,28 @@ The built-in `examples/policy/run_eval.py` supports the full set of evaluation f
 
 ```bash
 # Run all benchmark tasks
-python examples/policy/run_eval.py --headless
+python policies/pi0_family/run.py --headless
 
 # Run specific tasks
-python examples/policy/run_eval.py --task BananaInBowlTask RubiksCubeTask
+python policies/pi0_family/run.py --task BananaInBowlTask RubiksCubeTask
 
 # Run tasks by tag
-python examples/policy/run_eval.py --tag pick_place
+python policies/pi0_family/run.py --tag pick_place
 
 # Run 20 parallel episodes with subtask tracking
-python examples/policy/run_eval.py --headless --num_envs 20 --enable-subtask
+python policies/pi0_family/run.py --headless --num_envs 20 --enable-subtask
 
 # If 20 envs don't fit in GPU memory, split into runs:
-python examples/policy/run_eval.py --headless --num_envs 10 --num-runs 2 --enable-subtask
+python policies/pi0_family/run.py --headless --num_envs 10 --num-runs 2 --enable-subtask
 
-# Use a different policy backend
-python examples/policy/run_eval.py --policy gr00t --remote-host 10.0.0.1 --remote-port 5555
+# Use a different policy backend (each lives under policies/<policy>/run.py)
+python policies/gr00t/run.py --remote-host 10.0.0.1 --remote-port 5555
 
 # Use a specific instruction variant
-python examples/policy/run_eval.py --task BananaInBowlTask --instruction-type vague
+python policies/pi0_family/run.py --task BananaInBowlTask --instruction-type vague
 
 # Resume a previous run (skips completed episodes automatically)
-python examples/policy/run_eval.py --output-folder-name 2026-01-24_15-35-59_pi05
+python policies/pi0_family/run.py --output-folder-name 2026-01-24_15-35-59_pi05
 ```
 
 **Runtime estimate:** Each task runs up to 900 steps. With policy inference overhead, expect roughly **~15 min per task per run** on a single GPU (at ~1–2 it/s depending on `num_envs` and policy backend). For the full 120-task benchmark this works out to approximately **~20–30 hours per 100 tasks** on a single machine. Tasks that succeed early terminate faster, so actual runtime is usually on the lower end.
@@ -431,17 +431,17 @@ Additional evaluation scripts test policy robustness under visual or physical va
 
 | Script | Description |
 |--------|-------------|
-| `examples/policy/run_eval_lighting.py` | Evaluate with lighting intensity, shadow, and color variations |
-| `examples/policy/run_eval_background_variation.py` | Evaluate with different HDR background scenes |
-| `examples/policy/run_eval_camera_pose_variation.py` | Evaluate with random camera pose perturbations |
-| `examples/policy/run_eval_table_variation.py` | Evaluate with different table materials (oak, maple, bamboo, black) |
+| `policies/pi0_family/run_lighting.py` | Evaluate with lighting intensity, shadow, and color variations |
+| `policies/pi0_family/run_background_variation.py` | Evaluate with different HDR background scenes |
+| `policies/pi0_family/run_camera_pose_variation.py` | Evaluate with random camera pose perturbations |
+| `policies/pi0_family/run_table_variation.py` | Evaluate with different table materials (oak, maple, bamboo, black) |
 
 ## Example Scripts
 
 | Script | Description |
 |--------|-------------|
-| [`examples/demo/run_empty.py`](../examples/demo/run_empty.py) | Environment initialization test with random actions (no policy server needed) |
-| [`examples/policy/run_eval.py`](../examples/policy/run_eval.py) | Full multi-task policy evaluation (supports multi-env) |
+| [`examples/run_empty.py`](../examples/run_empty.py) | Environment initialization test with random actions (no policy server needed) |
+| [`policies/pi0_family/run.py`](../policies/pi0_family/run.py) | Full multi-task policy evaluation (supports multi-env) |
 
 ## See Also
 

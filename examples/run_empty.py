@@ -64,7 +64,7 @@ simulation_app = app_launcher.app
 from robolab.constants import PACKAGE_DIR, set_output_dir # noqa
 from episodes import run_empty_episode # noqa
 from robolab.core.environments.runtime import create_env, end_episode # noqa
-from robolab.registrations.droid_jointpos.auto_env_registrations import auto_register_droid_envs # noqa
+from robolab.registrations.droid.auto_env_registrations_jointpos import auto_register_droid_envs # noqa
 from robolab.core.environments.factory import get_envs # noqa
 from robolab.constants import get_timestamp # noqa
 from robolab.core.logging.results import dump_results_to_file, get_all_env_events, summarize_experiment_results # noqa

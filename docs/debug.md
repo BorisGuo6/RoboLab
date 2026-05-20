@@ -19,7 +19,7 @@ Prints detailed operational information during environment setup and execution:
 **Enable via CLI:**
 
 ```bash
-python examples/policy/run_eval.py --enable-verbose
+python policies/pi0_family/run.py --enable-verbose
 ```
 
 **Enable programmatically:**
@@ -47,7 +47,7 @@ Covers all conditional functions in `robolab.core.task.conditionals`:
 **Enable via CLI:**
 
 ```bash
-python examples/policy/run_eval.py --enable-debug
+python policies/pi0_family/run.py --enable-debug
 ```
 
 **Enable programmatically:**
@@ -95,7 +95,7 @@ This draws bounding boxes and coordinate axes in the viewport:
 You can enable both `VERBOSE` and `DEBUG` together for maximum diagnostics:
 
 ```bash
-python examples/policy/run_eval.py --enable-verbose --enable-debug
+python policies/pi0_family/run.py --enable-verbose --enable-debug
 ```
 
 | Flag | Scope | Volume |
@@ -142,11 +142,10 @@ print_env_table(tag="pick_place")       # Filter by tag
 print_env_table(verbose=True)           # Include full env config details
 ```
 
-Or use the standalone script:
+Or use the pytest test:
 
 ```bash
-python scripts/check_registered_envs.py
-python scripts/check_registered_envs.py --task BananaInBowlTask
+uv run pytest tests/test_registered_envs.py -v
 ```
 
 ### Verify tasks are valid
@@ -154,8 +153,8 @@ python scripts/check_registered_envs.py --task BananaInBowlTask
 Check that all task files load correctly, have valid fields, and no duplicate names:
 
 ```bash
-python scripts/check_tasks_valid.py
-python scripts/check_tasks_valid.py --tasks-folder /path/to/my_tasks/tasks
+uv run pytest tests/test_tasks_valid.py -v                 # all tasks
+uv run pytest tests/test_tasks_valid.py -v -k BananaInBowl # one task
 ```
 
 ### Verify IsaacLab installation
@@ -163,7 +162,7 @@ python scripts/check_tasks_valid.py --tasks-folder /path/to/my_tasks/tasks
 Minimal smoke test that IsaacLab and IsaacSim launch correctly:
 
 ```bash
-python scripts/check_isaaclab.py
+uv run pytest tests/test_isaaclab.py -v
 ```
 
 ### Inspect HDF5 data

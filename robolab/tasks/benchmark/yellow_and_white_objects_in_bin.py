@@ -19,7 +19,7 @@ class YellowAndWhiteObjectsInBinTerminations:
 
 @dataclass
 class YellowAndWhiteObjectsInBinTask(Task):
-    contact_object_list = ["mug", "banana", "grey_bin", "table"]
+    contact_object_list = ["mug", "banana", "grey_bin", "table", "bowl", "ketchup_bottle", "rubiks_cube_top", "rubiks_cube_middle", "rubiks_cube_bottom"]
     scene = import_scene("mug_banana_ketchup_bowl_rubiks3_bin.usda", contact_object_list)
     terminations = YellowAndWhiteObjectsInBinTerminations
     instruction = {

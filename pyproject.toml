@@ -38,28 +38,32 @@ dependencies = [
 
 [project.optional-dependencies]
 analysis = ["sbi"]
-all = ["sbi"]
+test = ["pytest"]
+all = ["sbi", "pytest"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["robolab", "robolab.*", "robolab_policy_client", "robolab_policy_client.*"]
+include = ["robolab", "robolab.*", "policies", "policies.*"]
 
 # -- uv configuration --
 
 [tool.uv]
 prerelease = "allow"
 index-strategy = "unsafe-best-match"
-no-build-isolation-package = ["flatdict"]
 # warp-lang 1.13.0.dev20260418 on pypi.nvidia.com only published the macOS
 # wheel — no Linux build — so any resolver pass that picked it would break
 # `uv sync` on Linux. Exclude that specific version.
 constraint-dependencies = ["warp-lang != 1.13.0.dev20260418"]
 
 [tool.uv.extra-build-dependencies]
-flatdict = ["setuptools<81"]
+# flatdict 4.0.1 ships sdist-only and its legacy setup.py needs an older
+# setuptools plus `wheel` to build. Building in an isolated PEP 517 env
+# (i.e. NOT in `no-build-isolation-package`) lets these deps apply
+# deterministically regardless of what's in the project venv.
+flatdict = ["setuptools<81", "wheel"]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
@@ -74,6 +78,9 @@ url = "https://pypi.nvidia.com"
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 120
@@ -82,5 +89,5 @@ line-length = 120
 select = ["I"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["robolab", "robolab_policy_client"]
+known-first-party = ["robolab", "policies"]
 known-third-party = ["isaaclab", "isaaclab_assets", "isaaclab_mimic", "isaaclab_rl", "isaaclab_tasks"]

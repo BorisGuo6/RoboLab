@@ -7,6 +7,7 @@ configurations.
 
 import numpy as np
 import random
+import math
 from typing import Optional, Any
 from .predicates import (
     ObjectState,
@@ -44,6 +45,7 @@ class PhysicalSolver:
         object_dims: dict[str, tuple[float, float, float]],
         object_paths: dict[str, str],
         scene_path: str,
+        object_metadata: Optional[dict[str, dict[str, Any]]] = None,
     ) -> tuple[bool, str]:
         """Solve physical predicates for all objects.
 
@@ -56,31 +58,45 @@ class PhysicalSolver:
         Returns:
             (success, message) tuple
         """
+        if object_metadata is None:
+            object_metadata = {}
+
         # Group predicates by type
         place_on_predicates = []
         place_in_predicates = []
         place_anywhere_predicates = []
+        seen_place_in_predicates = set()
+        support_placements: dict[tuple[str, Optional[int]], list[tuple[float, float, float, float]]] = {}
 
         for obj_name, obj_state in object_states.items():
             for pred in obj_state.predicates:
                 if isinstance(pred, PlaceOnPredicate):
                     place_on_predicates.append((obj_name, pred))
                 elif isinstance(pred, PlaceInPredicate):
-                    place_in_predicates.append((obj_name, pred))
+                    target_objects = tuple(getattr(pred, "target_objects", [pred.target_object]))
+                    key = (pred.support_object, target_objects)
+                    if key not in seen_place_in_predicates:
+                        seen_place_in_predicates.add(key)
+                        place_in_predicates.append((obj_name, pred))
                 elif pred.type == PredicateType.PLACE_ANYWHERE:
                     place_anywhere_predicates.append((obj_name, pred))
 
-        # Process place-on predicates
+        # Process place-on predicates by support so sibling objects can be packed together.
+        place_on_groups: dict[tuple[str, Optional[int]], list[tuple[str, PlaceOnPredicate]]] = {}
         for obj_name, pred in place_on_predicates:
-            success = self._solve_place_on(
-                object_states[obj_name],
-                pred,
-                object_states.get(pred.support_object),
-                object_dims[obj_name],
-                object_dims.get(pred.support_object),
+            place_on_groups.setdefault((pred.support_object, pred.shelf_level), []).append((obj_name, pred))
+
+        for (support_name, shelf_level), group in place_on_groups.items():
+            success = self._solve_place_on_group(
+                group,
+                object_states,
+                object_dims,
+                support_placements.setdefault((support_name, shelf_level), []),
+                object_metadata,
             )
             if not success:
-                return False, f"Failed to place {obj_name} on {pred.support_object}"
+                objects = ", ".join(obj_name for obj_name, _pred in group)
+                return False, f"Failed to place {objects} on {support_name}"
 
         # Process place-in predicates
         for obj_name, pred in place_in_predicates:
@@ -98,6 +114,189 @@ class PhysicalSolver:
 
         return True, "All physical constraints resolved"
 
+    def _solve_place_on_group(
+        self,
+        group: list[tuple[str, PlaceOnPredicate]],
+        object_states: dict[str, ObjectState],
+        object_dims: dict[str, tuple[float, float, float]],
+        support_slots: list[tuple[float, float, float, float]],
+        object_metadata: dict[str, dict[str, Any]],
+    ) -> bool:
+        """Solve all place-on predicates targeting one support as a joint layout."""
+        if not group:
+            return True
+
+        support_name = group[0][1].support_object
+        support_state = object_states.get(support_name)
+        support_dims = object_dims.get(support_name)
+        if not support_state or support_state.x is None or support_state.y is None:
+            return False
+        if support_dims is None:
+            return False
+
+        if len(group) == 1:
+            obj_name, pred = group[0]
+            return self._solve_place_on(
+                object_states[obj_name],
+                pred,
+                support_state,
+                object_dims[obj_name],
+                support_dims,
+                support_slots,
+                object_metadata.get(support_name, {}),
+            )
+
+        support_yaw = support_state.yaw or 0.0
+        padding = max(self.grid_resolution * 0.5, 0.004)
+        occupied_slots = list(support_slots)
+        assignment_by_object: dict[str, tuple[float, float, float, float]] = {}
+        unset_items = []
+
+        for index, (obj_name, pred) in enumerate(group):
+            obj_state = object_states.get(obj_name)
+            obj_dims = object_dims.get(obj_name)
+            if obj_state is None or obj_dims is None:
+                return False
+
+            self._ensure_place_on_orientation(obj_state, pred)
+            local_yaw = self._normalize_yaw((obj_state.yaw or 0.0) - support_yaw)
+            footprint_x, footprint_y = self._rotated_footprint(obj_dims, local_yaw)
+
+            if obj_state.x is not None and obj_state.y is not None:
+                local_x, local_y = self._to_local_support_offset(
+                    support_state,
+                    obj_state.x,
+                    obj_state.y,
+                    support_yaw,
+                )
+                if not self._fits_support_rectangle(
+                    local_x,
+                    local_y,
+                    footprint_x,
+                    footprint_y,
+                    support_dims,
+                ):
+                    return False
+                if self._rect_overlaps_layer(
+                    local_x,
+                    local_y,
+                    footprint_x,
+                    footprint_y,
+                    occupied_slots,
+                    padding,
+                ):
+                    return False
+                occupied_slots.append((local_x, local_y, footprint_x, footprint_y))
+                assignment_by_object[obj_name] = (local_x, local_y, footprint_x, footprint_y)
+                continue
+
+            candidates = [
+                (local_x, local_y)
+                for local_x, local_y in self._candidate_support_offsets(
+                    pred.relative_position,
+                    support_dims,
+                    footprint_x,
+                    footprint_y,
+                )
+                if self._fits_support_rectangle(
+                    local_x,
+                    local_y,
+                    footprint_x,
+                    footprint_y,
+                    support_dims,
+                )
+            ]
+            if not candidates:
+                return False
+            unset_items.append(
+                {
+                    "index": index,
+                    "name": obj_name,
+                    "footprint_x": footprint_x,
+                    "footprint_y": footprint_y,
+                    "candidates": candidates,
+                }
+            )
+
+        joint_assignments = self._find_joint_support_slots(unset_items, occupied_slots)
+        if joint_assignments is None:
+            return False
+        assignment_by_object.update(joint_assignments)
+
+        for obj_name, pred in group:
+            obj_state = object_states[obj_name]
+            obj_dims = object_dims[obj_name]
+            local_x, local_y, footprint_x, footprint_y = assignment_by_object[obj_name]
+            if obj_state.x is None or obj_state.y is None:
+                obj_state.x, obj_state.y = self._to_world_support_offset(
+                    support_state,
+                    local_x,
+                    local_y,
+                    support_yaw,
+                )
+            support_slots.append((local_x, local_y, footprint_x, footprint_y))
+            if not self._finish_place_on(
+                obj_state,
+                pred,
+                support_state,
+                support_dims,
+                obj_dims,
+                object_metadata.get(support_name, {}),
+            ):
+                return False
+
+        return True
+
+    def _find_joint_support_slots(
+        self,
+        items: list[dict[str, Any]],
+        occupied_slots: list[tuple[float, float, float, float]],
+    ) -> Optional[dict[str, tuple[float, float, float, float]]]:
+        """Backtracking non-overlap assignment for objects sharing one support."""
+        padding = max(self.grid_resolution * 0.5, 0.004)
+        ordered_items = sorted(
+            items,
+            key=lambda item: (
+                -(item["footprint_x"] * item["footprint_y"]),
+                -max(item["footprint_x"], item["footprint_y"]),
+                item["index"],
+            ),
+        )
+        assignments: dict[str, tuple[float, float, float, float]] = {}
+
+        def search(
+            item_index: int,
+            layer_slots: list[tuple[float, float, float, float]],
+        ) -> bool:
+            if item_index == len(ordered_items):
+                return True
+
+            item = ordered_items[item_index]
+            footprint_x = item["footprint_x"]
+            footprint_y = item["footprint_y"]
+            for local_x, local_y in item["candidates"]:
+                if self._rect_overlaps_layer(
+                    local_x,
+                    local_y,
+                    footprint_x,
+                    footprint_y,
+                    layer_slots,
+                    padding,
+                ):
+                    continue
+
+                slot = (local_x, local_y, footprint_x, footprint_y)
+                assignments[item["name"]] = slot
+                if search(item_index + 1, layer_slots + [slot]):
+                    return True
+                del assignments[item["name"]]
+
+            return False
+
+        if not search(0, list(occupied_slots)):
+            return None
+        return dict(assignments)
+
     def _solve_place_on(
         self,
         obj_state: ObjectState,
@@ -105,44 +304,67 @@ class PhysicalSolver:
         support_state: Optional[ObjectState],
         obj_dims: tuple[float, float, float],
         support_dims: Optional[tuple[float, float, float]],
+        support_slots: Optional[list[tuple[float, float, float, float]]] = None,
+        support_metadata: Optional[dict[str, Any]] = None,
     ) -> bool:
         """Solve place-on predicate by stacking object on support."""
         if not support_state or support_state.x is None or support_state.y is None:
             return False
+        if support_dims is None:
+            return False
 
-        # For now, simple heuristic placement on top
-        # In full implementation, this would use occupancy grid sampling
+        if support_slots is None:
+            support_slots = []
+
+        support_yaw = support_state.yaw or 0.0
+
+        self._ensure_place_on_orientation(obj_state, pred)
 
         # Use object's x, y if already set (from spatial predicates)
-        if obj_state.x is None:
-            # Sample position on support surface
-            if pred.relative_position == "center":
-                obj_state.x = support_state.x
-                obj_state.y = support_state.y
-            elif pred.relative_position == "edge":
-                # Random edge position
-                angle = random.uniform(0, 2 * np.pi)
-                radius = max(support_dims[0], support_dims[1]) / 2 * 0.7
-                obj_state.x = support_state.x + radius * np.cos(angle)
-                obj_state.y = support_state.y + radius * np.sin(angle)
-            else:
-                # Random position within support bounds
-                max_offset = max(support_dims[0], support_dims[1]) / 2 * 0.5
-                obj_state.x = support_state.x + random.uniform(-max_offset, max_offset)
-                obj_state.y = support_state.y + random.uniform(-max_offset, max_offset)
-
-        # Set z height on top of support
-        if support_state.z is None:
-            # Assume support is on table at z=0
-            support_z_top = support_dims[2] if support_dims else 0.05
-        else:
-            support_z_top = support_state.z + (
-                support_dims[2] / 2 if support_dims else 0.05
+        if obj_state.x is None or obj_state.y is None:
+            local_yaw = self._normalize_yaw((obj_state.yaw or 0.0) - support_yaw)
+            footprint_x, footprint_y = self._rotated_footprint(obj_dims, local_yaw)
+            slot = self._find_support_slot(
+                pred.relative_position,
+                support_dims,
+                footprint_x,
+                footprint_y,
+                support_slots,
+            )
+            if slot is None:
+                return False
+            obj_state.x, obj_state.y = self._to_world_support_offset(
+                support_state,
+                slot[0],
+                slot[1],
+                support_yaw,
             )
 
-        obj_state.z = support_z_top + obj_dims[2] / 2 + 0.001  # Small gap
+        local_x, local_y = self._to_local_support_offset(
+            support_state,
+            obj_state.x,
+            obj_state.y,
+            support_yaw,
+        )
+        local_yaw = self._normalize_yaw((obj_state.yaw or 0.0) - support_yaw)
+        footprint_x, footprint_y = self._rotated_footprint(obj_dims, local_yaw)
+        support_slots.append((local_x, local_y, footprint_x, footprint_y))
 
-        # Set orientation if not already set
+        return self._finish_place_on(
+            obj_state,
+            pred,
+            support_state,
+            support_dims,
+            obj_dims,
+            support_metadata or {},
+        )
+
+    def _ensure_place_on_orientation(
+        self,
+        obj_state: ObjectState,
+        pred: PlaceOnPredicate,
+    ) -> None:
+        # Set orientation before selecting an occupancy slot so the footprint is accurate.
         if obj_state.yaw is None:
             if pred.stability_preference == "stable":
                 obj_state.yaw = 0.0
@@ -151,6 +373,21 @@ class PhysicalSolver:
             else:
                 obj_state.yaw = random.choice([0, 90, 180, 270])
 
+    def _finish_place_on(
+        self,
+        obj_state: ObjectState,
+        pred: PlaceOnPredicate,
+        support_state: ObjectState,
+        support_dims: tuple[float, float, float],
+        obj_dims: tuple[float, float, float],
+        support_metadata: dict[str, Any],
+    ) -> bool:
+        support_z_top = self._support_surface_z(support_state, support_dims, pred, support_metadata)
+        if support_z_top is None:
+            return False
+
+        obj_state.z = support_z_top + obj_dims[2] / 2 + 0.001  # Small gap
+
         if obj_state.pitch is None:
             obj_state.pitch = 0.0
         if obj_state.roll is None:
@@ -158,8 +395,154 @@ class PhysicalSolver:
 
         obj_state.is_placed = True
         self.placed_objects.append(obj_state.name)
-
         return True
+
+    def _support_surface_z(
+        self,
+        support_state: ObjectState,
+        support_dims: tuple[float, float, float],
+        pred: PlaceOnPredicate,
+        support_metadata: dict[str, Any],
+    ) -> Optional[float]:
+        if pred.shelf_level is not None:
+            levels = support_metadata.get("shelf_levels") or []
+            try:
+                level_index = int(pred.shelf_level)
+            except (TypeError, ValueError):
+                return None
+            if level_index < 0 or level_index >= len(levels):
+                return None
+            if support_state.z is None:
+                support_bottom = 0.0
+            else:
+                support_bottom = support_state.z - support_dims[2] / 2
+            return support_bottom + float(levels[level_index])
+
+        # Set z height on top of support
+        if support_state.z is None:
+            # Assume support is on table at z=0
+            return support_dims[2] if support_dims else 0.05
+        return support_state.z + (support_dims[2] / 2 if support_dims else 0.05)
+
+    def _find_support_slot(
+        self,
+        relative_position: Optional[str],
+        support_dims: tuple[float, float, float],
+        footprint_x: float,
+        footprint_y: float,
+        support_slots: list[tuple[float, float, float, float]],
+    ) -> Optional[tuple[float, float]]:
+        padding = max(self.grid_resolution * 0.5, 0.004)
+        for local_x, local_y in self._candidate_support_offsets(
+            relative_position,
+            support_dims,
+            footprint_x,
+            footprint_y,
+        ):
+            if not self._fits_support_rectangle(
+                local_x,
+                local_y,
+                footprint_x,
+                footprint_y,
+                support_dims,
+            ):
+                continue
+            if self._rect_overlaps_layer(
+                local_x,
+                local_y,
+                footprint_x,
+                footprint_y,
+                support_slots,
+                padding,
+            ):
+                continue
+            return local_x, local_y
+        return None
+
+    def _candidate_support_offsets(
+        self,
+        relative_position: Optional[str],
+        support_dims: tuple[float, float, float],
+        footprint_x: float,
+        footprint_y: float,
+    ) -> list[tuple[float, float]]:
+        half_x = max(0.0, support_dims[0] / 2 - footprint_x / 2)
+        half_y = max(0.0, support_dims[1] / 2 - footprint_y / 2)
+        offsets: list[tuple[float, float]] = []
+
+        if relative_position == "edge":
+            offsets.extend(
+                [
+                    (half_x, 0.0),
+                    (-half_x, 0.0),
+                    (0.0, half_y),
+                    (0.0, -half_y),
+                    (half_x, half_y),
+                    (half_x, -half_y),
+                    (-half_x, half_y),
+                    (-half_x, -half_y),
+                ]
+            )
+
+        offsets.append((0.0, 0.0))
+        for fraction, count in [(0.35, 8), (0.55, 12), (0.75, 16), (1.0, 20)]:
+            for index in range(count):
+                angle = 2 * math.pi * index / count
+                offsets.append(
+                    (
+                        half_x * fraction * math.cos(angle),
+                        half_y * fraction * math.sin(angle),
+                    )
+                )
+
+        unique = []
+        seen = set()
+        for local_x, local_y in offsets:
+            key = (round(local_x, 6), round(local_y, 6))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append((local_x, local_y))
+        return unique
+
+    def _fits_support_rectangle(
+        self,
+        local_x: float,
+        local_y: float,
+        footprint_x: float,
+        footprint_y: float,
+        support_dims: tuple[float, float, float],
+    ) -> bool:
+        return (
+            abs(local_x) + footprint_x / 2 <= support_dims[0] / 2 + 1e-9
+            and abs(local_y) + footprint_y / 2 <= support_dims[1] / 2 + 1e-9
+        )
+
+    def _to_local_support_offset(
+        self,
+        support_state: ObjectState,
+        world_x: float,
+        world_y: float,
+        support_yaw: float,
+    ) -> tuple[float, float]:
+        dx = world_x - (support_state.x or 0.0)
+        dy = world_y - (support_state.y or 0.0)
+        yaw = math.radians(support_yaw)
+        local_x = dx * math.cos(yaw) + dy * math.sin(yaw)
+        local_y = -dx * math.sin(yaw) + dy * math.cos(yaw)
+        return local_x, local_y
+
+    def _to_world_support_offset(
+        self,
+        support_state: ObjectState,
+        local_x: float,
+        local_y: float,
+        support_yaw: float,
+    ) -> tuple[float, float]:
+        yaw = math.radians(support_yaw)
+        world_x = (support_state.x or 0.0) + local_x * math.cos(yaw) - local_y * math.sin(yaw)
+        world_y = (support_state.y or 0.0) + local_x * math.sin(yaw) + local_y * math.cos(yaw)
+        return world_x, world_y
 
     def _solve_place_in(
         self,
@@ -167,54 +550,113 @@ class PhysicalSolver:
         object_states: dict[str, ObjectState],
         object_dims: dict[str, tuple[float, float, float]],
     ) -> bool:
-        """Solve place-in predicate by placing objects inside container."""
+        """Solve place-in by packing objects above a container mouth.
+
+        Dense containers should overflow upward in layers, not sideways through
+        the container wall. Physics settling can then drop the layered pile into
+        the bowl/bin without starting from an invalid horizontal spread.
+        """
         container_state = object_states.get(pred.support_object)
-        if not container_state or container_state.x is None:
+        if not container_state or container_state.x is None or container_state.y is None:
             return False
 
         container_dims = object_dims.get(pred.support_object)
         if not container_dims:
             return False
 
-        # Simple grid placement inside container
-        target_objects = getattr(pred, "target_objects", [pred.target_object])
-        num_objects = len(target_objects)
-
-        # Estimate container interior bounds
-        container_width = container_dims[0] * 0.7
-        container_depth = container_dims[1] * 0.7
-        container_height = container_dims[2] * 0.5
-
-        # Simple grid layout
-        cols = int(np.ceil(np.sqrt(num_objects)))
-        rows = int(np.ceil(num_objects / cols))
-
-        cell_width = container_width / cols
-        cell_depth = container_depth / rows
-
-        for i, obj_name in enumerate(target_objects):
+        target_objects = list(getattr(pred, "target_objects", [pred.target_object]))
+        pack_items = []
+        for index, obj_name in enumerate(target_objects):
             obj_state = object_states.get(obj_name)
             if not obj_state:
                 continue
+            obj_dims = object_dims.get(obj_name)
+            if not obj_dims:
+                return False
+            pack_items.append((obj_name, obj_state, obj_dims, index))
 
-            row = i // cols
-            col = i % cols
+        if not pack_items:
+            return False
 
-            # Position within container
-            local_x = (col + 0.5) * cell_width - container_width / 2
-            local_y = (row + 0.5) * cell_depth - container_depth / 2
+        container_yaw = container_state.yaw or 0.0
+        mouth_radius_x = max(container_dims[0] * 0.43, self.grid_resolution)
+        mouth_radius_y = max(container_dims[1] * 0.43, self.grid_resolution)
+        container_top_z = self._container_top_z(container_state, container_dims)
+        layer_gap = max(self.grid_resolution * 2.5, 0.025)
+        overlap_padding = max(self.grid_resolution * 0.5, 0.004)
 
-            obj_state.x = container_state.x + local_x
-            obj_state.y = container_state.y + local_y
-
-            # Start above container, will settle with physics
-            container_z = (
-                container_state.z if container_state.z else container_dims[2] / 2
+        pack_items.sort(
+            key=lambda item: (
+                -(item[2][0] * item[2][1]),
+                -max(item[2][0], item[2][1]),
+                item[3],
             )
-            obj_state.z = container_z + container_height + 0.05
+        )
 
-            if obj_state.yaw is None:
-                obj_state.yaw = random.uniform(0, 360)
+        layers: list[dict[str, Any]] = []
+
+        for obj_name, obj_state, obj_dims, _index in pack_items:
+            local_yaws = self._candidate_local_yaws(obj_state.yaw, container_yaw)
+            slot = None
+            layer_index = None
+
+            for index, layer in enumerate(layers):
+                slot = self._find_container_slot(
+                    obj_dims,
+                    local_yaws,
+                    mouth_radius_x,
+                    mouth_radius_y,
+                    layer["rects"],
+                    index,
+                    overlap_padding,
+                )
+                if slot is not None:
+                    layer_index = index
+                    break
+
+            if slot is None:
+                layer_index = len(layers)
+                bottom_z = (
+                    container_top_z + 0.02
+                    if not layers
+                    else layers[-1]["bottom_z"] + layers[-1]["height"] + layer_gap
+                )
+                layers.append({"bottom_z": bottom_z, "height": 0.0, "rects": []})
+                slot = self._find_container_slot(
+                    obj_dims,
+                    local_yaws,
+                    mouth_radius_x,
+                    mouth_radius_y,
+                    layers[layer_index]["rects"],
+                    layer_index,
+                    overlap_padding,
+                )
+
+            if slot is None:
+                local_yaw, footprint_x, footprint_y = self._best_container_yaw(
+                    obj_dims,
+                    local_yaws,
+                    mouth_radius_x,
+                    mouth_radius_y,
+                )
+                local_x = 0.0
+                local_y = 0.0
+            else:
+                local_x, local_y, local_yaw, footprint_x, footprint_y = slot
+
+            layer = layers[layer_index]
+            layer["rects"].append((local_x, local_y, footprint_x, footprint_y))
+            layer["height"] = max(layer["height"], obj_dims[2])
+
+            obj_state.x, obj_state.y = self._to_world_container_offset(
+                container_state,
+                local_x,
+                local_y,
+                container_yaw,
+            )
+            obj_state.z = layer["bottom_z"] + obj_dims[2] / 2
+
+            obj_state.yaw = self._normalize_yaw(container_yaw + local_yaw)
             if obj_state.pitch is None:
                 obj_state.pitch = 0.0
             if obj_state.roll is None:
@@ -224,6 +666,200 @@ class PhysicalSolver:
             self.placed_objects.append(obj_name)
 
         return True
+
+    def _container_top_z(
+        self,
+        container_state: ObjectState,
+        container_dims: tuple[float, float, float],
+    ) -> float:
+        container_center_z = (
+            container_state.z if container_state.z is not None else container_dims[2] / 2
+        )
+        return container_center_z + container_dims[2] / 2
+
+    def _find_container_slot(
+        self,
+        obj_dims: tuple[float, float, float],
+        local_yaws: list[float],
+        radius_x: float,
+        radius_y: float,
+        layer_rects: list[tuple[float, float, float, float]],
+        layer_index: int,
+        padding: float,
+    ) -> Optional[tuple[float, float, float, float, float]]:
+        for local_x, local_y in self._candidate_container_offsets(radius_x, radius_y, layer_index):
+            for local_yaw in local_yaws:
+                footprint_x, footprint_y = self._rotated_footprint(obj_dims, local_yaw)
+                if not self._fits_container_ellipse(
+                    local_x,
+                    local_y,
+                    footprint_x,
+                    footprint_y,
+                    radius_x,
+                    radius_y,
+                ):
+                    continue
+                if self._rect_overlaps_layer(
+                    local_x,
+                    local_y,
+                    footprint_x,
+                    footprint_y,
+                    layer_rects,
+                    padding,
+                ):
+                    continue
+                return (local_x, local_y, local_yaw, footprint_x, footprint_y)
+        return None
+
+    def _candidate_local_yaws(
+        self,
+        world_yaw: Optional[float],
+        container_yaw: float,
+    ) -> list[float]:
+        candidates = []
+        if world_yaw is not None:
+            candidates.append(self._normalize_yaw(world_yaw - container_yaw))
+        candidates.extend(
+            [
+                0.0,
+                30.0,
+                45.0,
+                60.0,
+                90.0,
+                120.0,
+                135.0,
+                150.0,
+                180.0,
+                210.0,
+                225.0,
+                240.0,
+                270.0,
+                300.0,
+                315.0,
+                330.0,
+            ]
+        )
+
+        unique = []
+        seen = set()
+        for yaw in candidates:
+            normalized = self._normalize_yaw(yaw)
+            key = round(normalized, 6)
+            if key not in seen:
+                seen.add(key)
+                unique.append(normalized)
+        return unique
+
+    def _candidate_container_offsets(
+        self,
+        radius_x: float,
+        radius_y: float,
+        layer_index: int,
+    ) -> list[tuple[float, float]]:
+        offsets = []
+        if layer_index > 0:
+            stagger_radius = min(radius_x, radius_y) * min(0.12 + 0.04 * (layer_index % 3), 0.22)
+            stagger_angle = math.radians((layer_index * 137.5) % 360)
+            offsets.append(
+                (
+                    stagger_radius * math.cos(stagger_angle),
+                    stagger_radius * math.sin(stagger_angle),
+                )
+            )
+
+        offsets.append((0.0, 0.0))
+
+        for radius_fraction, count in [(0.22, 8), (0.38, 10), (0.54, 12), (0.68, 16)]:
+            for index in range(count):
+                angle = 2 * math.pi * index / count + math.radians(layer_index * 23.0)
+                offsets.append(
+                    (
+                        radius_x * radius_fraction * math.cos(angle),
+                        radius_y * radius_fraction * math.sin(angle),
+                    )
+                )
+
+        return offsets
+
+    def _rotated_footprint(
+        self,
+        obj_dims: tuple[float, float, float],
+        yaw_degrees: float,
+    ) -> tuple[float, float]:
+        yaw = math.radians(yaw_degrees)
+        cos_yaw = abs(math.cos(yaw))
+        sin_yaw = abs(math.sin(yaw))
+        footprint_x = obj_dims[0] * cos_yaw + obj_dims[1] * sin_yaw
+        footprint_y = obj_dims[0] * sin_yaw + obj_dims[1] * cos_yaw
+        return footprint_x, footprint_y
+
+    def _fits_container_ellipse(
+        self,
+        local_x: float,
+        local_y: float,
+        footprint_x: float,
+        footprint_y: float,
+        radius_x: float,
+        radius_y: float,
+    ) -> bool:
+        normalized_x = (abs(local_x) + footprint_x / 2) / radius_x
+        normalized_y = (abs(local_y) + footprint_y / 2) / radius_y
+        return normalized_x**2 + normalized_y**2 <= 1.0
+
+    def _rect_overlaps_layer(
+        self,
+        local_x: float,
+        local_y: float,
+        footprint_x: float,
+        footprint_y: float,
+        layer_rects: list[tuple[float, float, float, float]],
+        padding: float,
+    ) -> bool:
+        for other_x, other_y, other_footprint_x, other_footprint_y in layer_rects:
+            overlap_x = abs(local_x - other_x) < (footprint_x + other_footprint_x) / 2 + padding
+            overlap_y = abs(local_y - other_y) < (footprint_y + other_footprint_y) / 2 + padding
+            if overlap_x and overlap_y:
+                return True
+        return False
+
+    def _best_container_yaw(
+        self,
+        obj_dims: tuple[float, float, float],
+        local_yaws: list[float],
+        radius_x: float,
+        radius_y: float,
+    ) -> tuple[float, float, float]:
+        best_yaw = local_yaws[0]
+        best_footprint = self._rotated_footprint(obj_dims, best_yaw)
+        best_overflow = float("inf")
+
+        for local_yaw in local_yaws:
+            footprint_x, footprint_y = self._rotated_footprint(obj_dims, local_yaw)
+            overflow = max(0.0, footprint_x / 2 - radius_x) + max(
+                0.0,
+                footprint_y / 2 - radius_y,
+            )
+            if overflow < best_overflow:
+                best_yaw = local_yaw
+                best_footprint = (footprint_x, footprint_y)
+                best_overflow = overflow
+
+        return best_yaw, best_footprint[0], best_footprint[1]
+
+    def _to_world_container_offset(
+        self,
+        container_state: ObjectState,
+        local_x: float,
+        local_y: float,
+        container_yaw: float,
+    ) -> tuple[float, float]:
+        yaw = math.radians(container_yaw)
+        world_x = (container_state.x or 0.0) + local_x * math.cos(yaw) - local_y * math.sin(yaw)
+        world_y = (container_state.y or 0.0) + local_x * math.sin(yaw) + local_y * math.cos(yaw)
+        return world_x, world_y
+
+    def _normalize_yaw(self, yaw_degrees: float) -> float:
+        return yaw_degrees % 360.0
 
     def _solve_place_anywhere(
         self,

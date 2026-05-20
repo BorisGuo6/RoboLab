@@ -1,6 +1,6 @@
 # Available Tasks
 
-This table contains metadata for tasks in `robolab/tasks/`.
+This table contains metadata for tasks in `/home/xuningy/projects/robolab/robolab/tasks`.
 
 **Filtered by subfolders:** benchmark
 
@@ -129,4 +129,4 @@ This table contains metadata for tasks in `robolab/tasks/`.
 | YellowAndWhiteObjectsInBinTask (benchmark/yellow_and_white_objects_in_bin.py) | <img src="../../assets/scenes/_images/mug_banana_ketchup_bowl_rubiks3_bin.png" alt="mug_banana_ketchup_bowl_rubiks3_bin.png" width="400" height="None"><br>mug_banana_ketchup_bowl_rubiks3_bin.usda | **default:** Put all white objects and yellow objects in the grey bin<br>**vague:** Clean up white and yellow objects<br>**specific:** Identify the white-colored and yellow-colored object on the table and place each one into the grey bin | 60 | color, conjunction | 2 | simple |
 | YogurtInBowlTask (benchmark/yogurt_in_bowl.py) | <img src="../../assets/scenes/_images/breakfast_table.png" alt="breakfast_table.png" width="400" height="None"><br>breakfast_table.usda | **default:** Put the small red yogurt in the red bowl<br>**vague:** Put the yogurt in the bowl<br>**specific:** Pick up the small red yogurt container and place it inside the red bowl | 40 | color, size | 1 | simple |
 
-This table was generated automatically from CSV data. Last updated: 2026-04-28 11:25:29
+This table was generated automatically from CSV data. Last updated: 2026-05-07 13:52:20

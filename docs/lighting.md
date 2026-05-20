@@ -118,9 +118,9 @@ IsaacLab provides the following light spawners through `isaaclab.sim`:
 
 ## Lighting Variation for Robustness Testing
 
-To evaluate policy robustness under different lighting conditions, register multiple environment variants with different `lighting_cfg` values. See `robolab/registrations/droid_jointpos/auto_env_registrations_lighting_variations.py` for a complete example.
+To evaluate policy robustness under different lighting conditions, register multiple environment variants with different `lighting_cfg` values. See `robolab/registrations/droid/auto_env_registrations_lighting_variations.py` for a complete example.
 
-The built-in evaluation script `examples/policy/run_eval_lighting.py` runs benchmarks across lighting conditions automatically.
+The built-in evaluation script `policies/pi0_family/run_lighting.py` runs benchmarks across lighting conditions automatically.
 
 ## See Also
 

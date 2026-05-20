@@ -10,7 +10,7 @@ from isaaclab.utils import configclass
 class SphereLightCfg:
     """Cfg class that adds lighting to scene configurations."""
     sphere_light = AssetBaseCfg(
-        prim_path="/World/sphere",
+        prim_path="{ENV_REGEX_NS}/sphere",
         spawn=sim_utils.SphereLightCfg(intensity=5000),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, -0.6, 0.7)),
     )
@@ -20,7 +20,7 @@ class SphereLightCfg:
 class RedSphereLightCfg:
     """Cfg class that adds lighting to scene configurations."""
     red_sphere_light = AssetBaseCfg(
-        prim_path="/World/sphere_red",
+        prim_path="{ENV_REGEX_NS}/sphere_red",
         spawn=sim_utils.SphereLightCfg(intensity=100000, color=(1.0, 0.0, 0.0)),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 1.0)),
     )
@@ -28,7 +28,7 @@ class RedSphereLightCfg:
 class BlueSphereLightCfg:
     """Cfg class that adds lighting to scene configurations."""
     blue_sphere_light = AssetBaseCfg(
-        prim_path="/World/sphere_blue",
+        prim_path="{ENV_REGEX_NS}/sphere_blue",
         spawn=sim_utils.SphereLightCfg(intensity=100000, color=(0.0, 0.0, 1.0)),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 1.0)),
     )
@@ -36,7 +36,7 @@ class BlueSphereLightCfg:
 class GreenSphereLightCfg:
     """Cfg class that adds lighting to scene configurations."""
     green_sphere_light = AssetBaseCfg(
-        prim_path="/World/sphere_green",
+        prim_path="{ENV_REGEX_NS}/sphere_green",
         spawn=sim_utils.SphereLightCfg(intensity=100000, color=(0.0, 1.0, 0.0)),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 1.0)),
     )
@@ -46,7 +46,7 @@ class GreenSphereLightCfg:
 class ExtremelyDimSphereLightCfg:
     """Cfg class that adds lighting to scene configurations."""
     sphere_light = AssetBaseCfg(
-        prim_path="/World/sphere",
+        prim_path="{ENV_REGEX_NS}/sphere",
         spawn=sim_utils.SphereLightCfg(intensity=50),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, -0.6, 0.7)),
     )

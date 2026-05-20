@@ -13,6 +13,7 @@ Note: For policy-controlled episodes, see policy/episode.py
 """
 
 import os
+import re
 
 import cv2
 import numpy as np
@@ -22,55 +23,85 @@ from tqdm import tqdm
 
 from robolab.constants import PACKAGE_DIR, get_output_dir
 from robolab.core.logging.results import extract_initial_state_info, extract_subtask_info
-from robolab.core.observations.observation_utils import unpack_image_obs
+from robolab.core.observations.observation_utils import unpack_image_obs, unpack_viewport_cams
 from robolab.core.utils.video_utils import VideoWriter
 
 
-def run_gripper_toggle_episode(env, save_videos=True, headless=False, num_steps=100, toggle_every=5):
+def run_gripper_toggle_episode(env, env_cfg=None, *, save_videos=True, video_mode="all",
+                               headless=False, num_steps=100, toggle_every=5):
+    """Toggle the gripper open/closed every `toggle_every` steps while holding the
+    arm joints fixed.
 
+    Video saving mirrors ``robolab.eval.episode.run_episode``: per-env writers,
+    fps derived from ``env_cfg.sim``, sensor + viewport streams selectable via
+    ``video_mode`` ("all" / "sensor" / "viewport" / "none"), files named after
+    the task instruction and dropped under ``get_output_dir()``.
+    """
     robot = env.scene["robot"]
     obs, _ = env.reset()
-    count = 0
+
+    instruction = getattr(env_cfg, "instruction", None) or "gripper_toggle"
+    if isinstance(instruction, dict):
+        instruction = instruction.get("default", "gripper_toggle")
+    cleaned_instruction = re.sub(r"[^\w\s]", "", instruction).replace(" ", "_")
+
+    if env_cfg is not None:
+        video_fps = 1 / (env_cfg.sim.render_interval * env_cfg.sim.dt)
+    else:
+        video_fps = 15
+
+    save_sensor = save_videos and video_mode in ("all", "sensor")
+    save_viewport = save_videos and video_mode in ("all", "viewport")
+
+    video_writers_obs: list[VideoWriter] = []
+    video_writers_viewport: list[VideoWriter] = []
+    if save_videos:
+        for env_id in range(env.num_envs):
+            suffix = f"_env{env_id}" if env.num_envs > 1 else ""
+            if save_sensor:
+                p = os.path.join(get_output_dir(), f"{cleaned_instruction}{suffix}.mp4")
+                video_writers_obs.append(VideoWriter(p, video_fps))
+            if save_viewport:
+                p = os.path.join(get_output_dir(), f"{cleaned_instruction}{suffix}_viewport.mp4")
+                video_writers_viewport.append(VideoWriter(p, video_fps))
+
     toggle_gripper = False
-
-    if save_videos:
-        video_path = os.path.join(env.output_dir, "gripper_toggle_video.mp4")
-        video_writer = VideoWriter(video_path, fps=15)
-
     subtask_status = []
-    for i in tqdm(range(num_steps)):
-        # Toggle gripper every 100 steps
-        if count % toggle_every == 0:
-            toggle_gripper = not toggle_gripper
-            print(f"[Step {count:04d}] Gripper state: {'open' if toggle_gripper else 'closed'}")
+    try:
+        for count in tqdm(range(num_steps)):
+            if count % toggle_every == 0:
+                toggle_gripper = not toggle_gripper
+                print(f"[Step {count:04d}] Gripper state: {'open' if toggle_gripper else 'closed'}")
 
-        # Get current joint positions
-        current_joint_pos = robot.data.joint_pos[0, :7]  # Get positions of the 7 arm joints
+            current_joint_pos = robot.data.joint_pos[0, :7]
+            gripper_width = 0.0 if toggle_gripper else 0.785398163
+            gripper_action = torch.tensor([gripper_width], device=env.device)
+            actions = torch.cat([current_joint_pos, gripper_action]).unsqueeze(0)
 
-        # Set actions
-        gripper_width = 0.0 if toggle_gripper else 0.785398163
+            obs, _, term, trunc, info = env.step(actions)
 
-        # Create gripper action tensor on CUDA
-        gripper_action = torch.tensor([gripper_width], device='cuda:0')
+            if save_videos:
+                for env_id in range(env.num_envs):
+                    if save_sensor:
+                        frame = unpack_image_obs(obs, scale=0.5, env_id=env_id).get("combined_image")
+                        if frame is not None:
+                            video_writers_obs[env_id].write(frame)
+                    if save_viewport:
+                        frame_vp = unpack_viewport_cams(obs, env_id=env_id).get("combined_image")
+                        if frame_vp is not None:
+                            video_writers_viewport[env_id].write(frame_vp)
 
-        # Concatenate current joint positions with gripper width
-        actions = torch.cat([current_joint_pos, gripper_action]).unsqueeze(0)
-
-        # Step environment
-        obs, _, term, trunc, info = env.step(actions)
-
-        # Generate video
-        combined_image = unpack_image_obs(obs).get("combined_image")
-        if save_videos:
-            video_writer.write(combined_image)
-        if not headless:
-            cv2.imshow("camera", cv2.cvtColor(combined_image, cv2.COLOR_RGB2BGR))
-            cv2.waitKey(1)
-
-        count += 1
-
-    if save_videos:
-        video_writer.release()
+            if not headless:
+                viz = unpack_image_obs(obs).get("combined_image")
+                if viz is not None:
+                    cv2.imshow("camera", cv2.cvtColor(viz, cv2.COLOR_RGB2BGR))
+                    cv2.waitKey(1)
+    finally:
+        for vw in video_writers_obs + video_writers_viewport:
+            try:
+                vw.release()
+            except Exception:
+                pass
 
     return True, subtask_status
 

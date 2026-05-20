@@ -82,6 +82,7 @@ class PhysicalPredicate(Predicate):
     support_ratio: float = 0.5  # Ratio of contact area to bottom area
     stability_preference: Literal["stable", "unstable", "neutral"] = "stable"
     relative_position: Optional[str] = None  # e.g., "center", "edge", "left-edge"
+    shelf_level: Optional[int] = None
 
     def __repr__(self):
         parts = [f"{self.type.value}({self.target_object}"]
@@ -91,6 +92,8 @@ class PhysicalPredicate(Predicate):
         parts.append(f", stability={self.stability_preference}")
         if self.relative_position:
             parts.append(f", pos={self.relative_position}")
+        if self.shelf_level is not None:
+            parts.append(f", shelf_level={self.shelf_level}")
         parts.append(")")
         return "".join(parts)
 
@@ -145,6 +148,7 @@ class PlaceOnPredicate(PhysicalPredicate):
         support_ratio: float = 0.5,
         stability_preference: Literal["stable", "unstable", "neutral"] = "stable",
         relative_position: Optional[str] = None,
+        shelf_level: Optional[int] = None,
     ):
         super().__init__(
             type=PredicateType.PLACE_ON,
@@ -153,6 +157,7 @@ class PlaceOnPredicate(PhysicalPredicate):
             support_ratio=support_ratio,
             stability_preference=stability_preference,
             relative_position=relative_position,
+            shelf_level=shelf_level,
         )
 
 
@@ -257,6 +262,7 @@ def parse_predicates_from_dict(pred_dict: dict) -> Predicate:
             support_ratio=pred_dict.get("support_ratio", 0.5),
             stability_preference=pred_dict.get("stability", "stable"),
             relative_position=pred_dict.get("position"),
+            shelf_level=pred_dict.get("shelf_level", pred_dict.get("support_level")),
         )
 
     elif pred_type == PredicateType.PLACE_IN:

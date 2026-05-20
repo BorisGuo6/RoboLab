@@ -41,12 +41,12 @@ class BananasOutOfBinTask(Task):
             conditions={
                 "banana_02": [
                     partial(object_grabbed, object="banana_02"),
-                    partial(object_outside_of, object="banana_02", container="grey_bin", tolerance=0.00),
+                    partial(object_outside_of, object="banana_02", container="grey_bin", tolerance=0.00, require_gripper_detached=True),
                     partial(object_dropped, object="banana_02"),
                 ],
                 "banana_04": [
                     partial(object_grabbed, object="banana_04"),
-                    partial(object_outside_of, object="banana_04", container="grey_bin", tolerance=0.00),
+                    partial(object_outside_of, object="banana_04", container="grey_bin", tolerance=0.00, require_gripper_detached=True),
                     partial(object_dropped, object="banana_04"),
                 ],
             },

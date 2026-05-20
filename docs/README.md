@@ -69,6 +69,10 @@ Otherwise, pick whichever applies to your use case.
 1. **[Setting Up Environment Registration](environment_registration.md)** — Register tasks with your robot/observation/action/simulation settings. For DROID with joint-position actions, the built-in registration can be used directly.
 2. **[Evaluating a New Policy](policy.md)** — Implement an inference client for your model and run multi-task evaluation. Everything can live in your own separate repository.
 
+### Analysis
+
+1. **[Statistical Significance of Results](statistical_significance.md)** — Discussion on how to run evaluations such that your results are statistically significant.
+
 ### AI Workflows
 
 - **[Scene Generation](scene.md#ai-workflows-scene-generation)** — Generate USD scenes from natural language using the `/robolab-scenegen` Claude Code skill. See [`skills/robolab-scenegen/`](../skills/robolab-scenegen/).

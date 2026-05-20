@@ -32,26 +32,39 @@ source .venv/bin/activate
 uv sync
 ```
 
-On first run, Isaac Sim prompts you to accept the NVIDIA Omniverse EULA. Either accept it interactively, or set it once in your shell:
-```bash
-export OMNI_KIT_ACCEPT_EULA=Y
-```
-
-> **Running without activating the venv**: if you don't `source .venv/bin/activate`, prefix every `python` command with `uv run` (e.g. `uv run python scripts/check_registered_envs.py`).
-
 Verify installation:
 ```bash
-python scripts/check_registered_envs.py
+uv run pytest tests/
 ```
+
+This runs the install-verification suite end-to-end: isaaclab importable, all task definitions valid, env factory populated, one full episode runs. The suite auto-accepts the NVIDIA Omniverse EULA so the run is fully headless with no prompts.
+
+Run individual checks:
+```bash
+uv run pytest tests/test_isaaclab.py -v          # isaaclab installed
+uv run pytest tests/test_registered_envs.py -v   # env factory populated
+uv run pytest tests/test_tasks_valid.py -v       # all task definitions valid
+uv run pytest tests/test_run_empty.py -v         # one full episode (default: BananaInBowlTask)
+uv run pytest tests/test_run_empty.py -v --task RubiksCubeTask
+```
+
+> **Running without activating the venv**: if you don't `source .venv/bin/activate`, prefix every `python` command with `uv run` (e.g. `uv run pytest tests/`).
+
+> **EULA outside the test suite**: when running other entry points (e.g. `policies/pi0_family/run.py`) for the first time, set `export OMNI_KIT_ACCEPT_EULA=Y` once. Cached after first acceptance.
 
 ### Run without a policy
 
 ```bash
 # Run an empty episode with random actions
-python examples/demo/run_empty.py --headless
+python examples/run_empty.py --headless
 
 # Playback recorded demonstration data
-python examples/demo/run_recorded.py --headless
+python examples/run_recorded.py --headless
+
+# Toggle the gripper open/closed while holding the arm fixed (sanity-check
+# the gripper action path; saves sensor + viewport video to
+# output/run_gripper_toggle/<task>/)
+python examples/run_gripper_toggle.py --task BananaInBowlTask --headless
 ```
 
 ### Run with a policy
@@ -68,7 +81,7 @@ uv pip install -e ../openpi/packages/openpi-client
 1. Start your policy server in a separate terminal.
 2. Run evaluation:
    ```bash
-   python examples/policy/run_eval.py --policy pi05 --task BananaInBowlTask --num-envs 12 --headless
+   python policies/pi0_family/run.py --policy pi05 --task BananaInBowlTask --num-envs 12 --headless
    ```
 3. Analyze results:
    ```bash
@@ -79,19 +92,19 @@ uv pip install -e ../openpi/packages/openpi-client
 
 ```bash
 # Run on specific tasks (these two are good for sanity checking)
-python examples/policy/run_eval.py --policy pi05 --task BananaInBowlTask RubiksCubeAndBananaTask
+python policies/pi0_family/run.py --policy pi05 --task BananaInBowlTask RubiksCubeAndBananaTask
 
 # Run on a tag of tasks
-python examples/policy/run_eval.py --policy pi05 --tag semantics
+python policies/pi0_family/run.py --policy pi05 --tag semantics
 
 # Run 12 parallel episodes per task
-python examples/policy/run_eval.py --policy pi05 --headless --num-envs 12
+python policies/pi0_family/run.py --policy pi05 --headless --num-envs 12
 
 # Enable subtask progress tracking
-python examples/policy/run_eval.py --policy pi05 --headless --enable-subtask
+python policies/pi0_family/run.py --policy pi05 --headless --enable-subtask
 
 # Resume a previous run (skips completed episodes)
-python examples/policy/run_eval.py --policy pi05 --output-folder-name my_previous_run
+python policies/pi0_family/run.py --policy pi05 --output-folder-name my_previous_run
 ```
 
 ## Documentation

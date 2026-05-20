@@ -21,7 +21,7 @@ class WhiteMugInCenterOfTableTerminations:
 
 @dataclass
 class WhiteMugInCenterOfTableTask(Task):
-    contact_object_list = ["mug", "bowl", "table", "alphabet_soup_can", "orange_juice_carton", "smartphone", "milk_carton"]
+    contact_object_list = ["mug", "bowl", "table", "alphabet_soup_can", "orange_juice_carton", "smartphone", "milk_carton", "banana", "rubiks_cube"]
     scene = import_scene("objects_around_table.usda", contact_object_list)
     terminations = WhiteMugInCenterOfTableTerminations
     instruction = {

@@ -115,7 +115,7 @@ The quickest path is to let RoboLab generate the observation group from the same
 
 ```python
 from robolab.core.observations.observation_utils import generate_image_obs_from_cameras
-from robolab.registrations.droid_jointpos.camera_presets import WRIST_LEFT
+from robolab.registrations.droid.camera_presets import WRIST_LEFT
 
 ImageObsCfg = generate_image_obs_from_cameras(WRIST_LEFT)
 ```

@@ -14,7 +14,9 @@ from robolab.core.logging.results import (
     summarize_experiments_by_category_with_attributes,
     summarize_experiments_by_difficulty,
     summarize_experiments_by_instruction_type,
+    summarize_experiments_by_num_objects,
     summarize_experiments_by_scene,
+    summarize_experiments_by_task_length,
     summarize_experiments_by_wrong_objects,
     summarize_task_results,
 )
@@ -29,18 +31,43 @@ def main():
     parser.add_argument("--task", type=str, nargs='+', default=None, help="Name(s) of the task(s) to summarize")
     parser.add_argument("--by-attributes", action="store_true", default=False, help="Summarize results in one table with categories (visual, relational, procedural) and their attributes grouped together")
     parser.add_argument("--by-difficulty", action="store_true", default=False, help="Summarize results grouped by difficulty label (simple, moderate, complex)")
+    parser.add_argument("--by-num-objects", action="store_true", default=False, help="Summarize results grouped by number of objects per task (count of contact_object_list)")
+    parser.add_argument("--by-task-length", action="store_true", default=False, help="Summarize results grouped by task length (num_subtasks, the same metric used in the difficulty score)")
     parser.add_argument("--by-scene", action="store_true", default=False, help="Summarize results by scene instead of by task")
     parser.add_argument("--by-wrong-objects", action="store_true", default=False, help="Summarize each task with columns on wrong objects: success count, fail count, and which objects were grabbed")
     parser.add_argument("--by-instruction-type", action="store_true", default=False, help="Compare task success rates across instruction types (default, vague, specific, etc.) in a pivot table")
     parser.add_argument("--csv", action="store_true", default=False, help="If true, show the results in CSV format for copy and pasting")
-    parser.add_argument("--csv-compact", action="store_true", default=False, help="CSV mode with stddev in same column as value, e.g., '-9.14 (± 4.72)' (implies --csv)")
     parser.add_argument("--output-csv", type=str, default=None, metavar="FILE", help="Write CSV output to the specified file (implies --csv)")
     parser.add_argument("--filter-pattern", type=str, default=None, help="Glob-style pattern to filter results by env_name (e.g., 'pick_*' or '*cube*')")
     parser.add_argument("--filter-field", type=str, default="env_name", help="Field to filter results by (e.g., 'env_name', 'task_name', 'scene', 'attributes')")
-    parser.add_argument("--no-metrics", action="store_true", default=False, help="Hide trajectory metrics columns (EE SPARC, Path Length, Speed)")
-    parser.add_argument("--timing", action="store_true", default=False, help="Show wall-clock timing columns (it/s, Wall(s))")
+    parser.add_argument(
+        "--metrics", nargs="+", default=["score", "time", "sparc", "pathlen", "speed"],
+        choices=["score", "time", "wrongobj", "sparc", "pathlen", "speed", "timing", "succ-eps", "all"],
+        help="Which optional columns to show. Default: score time sparc pathlen speed. Use 'all' for everything. "
+             "Note: sparc/pathlen/speed are grouped — selecting any one shows all three (TODO: split).",
+    )
+    parser.add_argument("--show-stddev", action="store_true", default=False, help="Show stddev columns next to value columns")
+    parser.add_argument("--show-stddev-compact", action="store_true", default=False, help="Show stddev inline as 'value (± stddev)' (CSV mode only; behaves like --show-stddev in non-CSV mode)")
     parser.add_argument("--exclude-containers", action="store_true", default=False, help="Exclude container objects (bin, crate, box, etc.) from wrong object grabbed counts")
     args = parser.parse_args()
+
+    # --verbose: show everything
+    if args.verbose:
+        args.metrics = ["all"]
+        args.show_stddev = True
+
+    # Expand metrics list
+    metrics = set(args.metrics)
+    if "all" in metrics:
+        metrics = {"score", "time", "wrongobj", "sparc", "pathlen", "speed", "timing", "succ-eps"}
+
+    show_scores = "score" in metrics
+    show_duration = "time" in metrics
+    show_wrong_objects = "wrongobj" in metrics
+    show_metrics_traj = bool(metrics & {"sparc", "pathlen", "speed"})  # any of the trajectory metrics → all 3 (limitation)
+    show_timing = "timing" in metrics
+    show_eps = "succ-eps" in metrics
+    show_stddev = args.show_stddev or args.show_stddev_compact
 
     folders, pattern_expanded = expand_folder_patterns(args.folder, base_dir=DEFAULT_OUTPUT_DIR)
 
@@ -72,11 +99,8 @@ def main():
     if args.filter_pattern is not None:
         episode_results = filter_episodes_by_pattern(episode_results, args.filter_pattern, field=args.filter_field)
 
-    # Metrics shown by default, can be hidden with --no-metrics
-    show_metrics = not args.no_metrics
-
-    # If --output-csv or --csv-compact is specified, implies --csv
-    use_csv = args.csv or args.output_csv is not None or args.csv_compact
+    # If --output-csv or --show-stddev-compact is specified, implies --csv
+    use_csv = args.csv or args.output_csv is not None or args.show_stddev_compact
 
     # If --output-csv is not an absolute path, default to the first data folder
     output_csv_path = args.output_csv
@@ -85,21 +109,36 @@ def main():
 
     def run_summarization():
         if args.by_attributes:
-            # Print combined category + attributes table
-            summarize_experiments_by_category_with_attributes(episode_results=episode_results, remap=BENCHMARK_TASK_CATEGORIES, VERBOSE=args.verbose, csv=use_csv, show_metrics=show_metrics, csv_compact=args.csv_compact)
+            summarize_experiments_by_category_with_attributes(episode_results=episode_results, remap=BENCHMARK_TASK_CATEGORIES, VERBOSE=show_stddev, csv=use_csv, show_metrics=show_metrics_traj, csv_compact=args.show_stddev_compact)
         elif args.by_difficulty:
-            summarize_experiments_by_difficulty(episode_results=episode_results, VERBOSE=args.verbose, csv=use_csv, show_metrics=show_metrics, csv_compact=args.csv_compact)
+            summarize_experiments_by_difficulty(episode_results=episode_results, VERBOSE=show_stddev, csv=use_csv, show_metrics=show_metrics_traj, csv_compact=args.show_stddev_compact)
+        elif args.by_num_objects:
+            summarize_experiments_by_num_objects(episode_results=episode_results, VERBOSE=show_stddev, csv=use_csv, show_metrics=show_metrics_traj, csv_compact=args.show_stddev_compact)
+        elif args.by_task_length:
+            summarize_experiments_by_task_length(episode_results=episode_results, VERBOSE=show_stddev, csv=use_csv, show_metrics=show_metrics_traj, csv_compact=args.show_stddev_compact)
         elif args.by_scene:
-            summarize_experiments_by_scene(episode_results=episode_results, VERBOSE=args.verbose, csv=use_csv, csv_compact=args.csv_compact)
+            summarize_experiments_by_scene(episode_results=episode_results, VERBOSE=show_stddev, csv=use_csv, csv_compact=args.show_stddev_compact)
         elif args.by_wrong_objects:
             summarize_experiments_by_wrong_objects(episode_results=episode_results, exclude_containers=args.exclude_containers, csv=use_csv)
         elif args.by_instruction_type:
-            summarize_experiments_by_instruction_type(episode_results=episode_results, VERBOSE=args.verbose, csv=use_csv, csv_compact=args.csv_compact, show_metrics=show_metrics)
+            summarize_experiments_by_instruction_type(episode_results=episode_results, VERBOSE=show_stddev, csv=use_csv, csv_compact=args.show_stddev_compact, show_metrics=show_metrics_traj)
         else:
-            summarize_experiment_results(episode_results=episode_results, VERBOSE=args.verbose, csv=use_csv, exclude_containers=args.exclude_containers, show_metrics=show_metrics, show_timing=args.timing, csv_compact=args.csv_compact)
+            summarize_experiment_results(
+                episode_results=episode_results,
+                VERBOSE=show_stddev,
+                csv=use_csv,
+                show_wrong_objects=show_wrong_objects,
+                exclude_containers=args.exclude_containers,
+                show_metrics=show_metrics_traj,
+                show_timing=show_timing,
+                csv_compact=args.show_stddev_compact,
+                show_scores=show_scores,
+                show_duration=show_duration,
+                show_eps=show_eps,
+            )
 
         if args.show_episodes:
-            summarize_task_results(episode_results, VERBOSE=args.verbose, csv=use_csv, csv_compact=args.csv_compact)
+            summarize_task_results(episode_results, VERBOSE=show_stddev, csv=use_csv, csv_compact=args.show_stddev_compact)
 
     # If --output-csv is specified, write to file
     if output_csv_path:

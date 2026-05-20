@@ -13,7 +13,12 @@ __pycache__
 **NOT_USED.py
 **OLD.py
 .venv
-debug/
+debug/*
+!debug/scripts/
+!debug/scripts/**
+!debug/container_hulls/
+!debug/container_hulls/**
+docker-cache/
 
 # Documentation
 docs/superpowers/

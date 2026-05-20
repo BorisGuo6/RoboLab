@@ -124,8 +124,8 @@ In short:
 
 | Client | Protocol | File |
 |--------|----------|------|
-| Pi0 / Pi0-fast / Pi05 | WebSocket (OpenPI) | `robolab_policy_client/pi0_family.py` |
-| GR00T | ZMQ | `robolab_policy_client/gr00t.py` |
-| DreamZero | WebSocket (msgpack) | `robolab_policy_client/dreamzero.py` |
+| Pi0 / Pi0-fast / Pi05 / Paligemma / Paligemma-fast | WebSocket (OpenPI) | `policies/pi0_family/client.py` |
+| GR00T | ZMQ | `policies/gr00t/client.py` |
+| DreamZero | WebSocket (msgpack) | `policies/dreamzero/client.py` |
 
 See [Inference Clients](inference.md) for server setup instructions.

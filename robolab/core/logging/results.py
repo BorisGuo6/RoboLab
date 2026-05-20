@@ -11,10 +11,24 @@ import statistics
 from collections import Counter
 
 import h5py
+from scipy.stats import beta as scipy_beta
 
 from robolab.constants import BENCHMARK_TASK_CATEGORIES, TASK_DIR
 from robolab.core.task.status import StatusCode, get_status_name
 from robolab.core.utils.file_utils import load_file  # noqa
+
+
+def beta_ci_bounds(k: int, n: int, confidence: float = 0.95) -> tuple[float, float]:
+    """95% Beta(k+1, n-k+1) credible interval bounds for a binomial success rate.
+
+    Returns (lower, upper) as fractions in [0, 1]. With a uniform prior on p,
+    the posterior is Beta(k+1, n-k+1). Numerically very close to the Wilson CI
+    but yields a full distribution (not just endpoints), and stays in [0, 1].
+    """
+    if n == 0:
+        return 0.0, 1.0
+    alpha = 1 - confidence
+    return tuple(scipy_beta.ppf([alpha / 2, 1 - alpha / 2], k + 1, n - k + 1))
 
 
 def _get_metric(ep: dict, key: str):
@@ -715,9 +729,14 @@ def get_avg_score(episode_results: list[dict], task_name=None, fail_only=False):
     if fail_only:
         episode_results = [episode_result for episode_result in episode_results if episode_result.get("success") == False]
 
-    # Filter out None scores
+    # Filter out None scores. Successes always count as 1.0 — older runs
+    # stored 0.0 because the subtask-state-machine wasn't writing the
+    # completion score at the time, so override here.
     valid_scores = []
     for episode_result in episode_results:
+        if episode_result.get("success") is True:
+            valid_scores.append(1.0)
+            continue
         score = episode_result.get("score")
         if score is not None:
             valid_scores.append(float(score))
@@ -929,6 +948,29 @@ def get_scene_grouped_results(episode_results: list[dict]) -> dict:
     results["failure"] = [ep for ep in episode_results if not ep.get("success")]
     return results
 
+
+def get_field_grouped_results(episode_results: list[dict], field_name: str) -> dict:
+    """
+    Group episodes by an arbitrary integer/string field on each episode.
+
+    Used by num_objects / num_subtasks groupings; keys are coerced to strings so
+    they can flow through the existing string-formatting code paths.
+    """
+    results = {}
+    for episode in episode_results:
+        key = episode.get(field_name)
+        if key is None:
+            key = "(unknown)"
+        else:
+            key = str(key)
+        if key not in results:
+            results[key] = {"success": [], "failure": []}
+        if episode.get("success"):
+            results[key]["success"].append(episode)
+        else:
+            results[key]["failure"].append(episode)
+    return results
+
 def print_result_table(episode_results: list[dict],
                       group_by: str = "task",
                       title: str = None,
@@ -1052,12 +1094,19 @@ def get_grouped_result_table_str(episode_results: list[dict],
     elif group_by == "scene":
         results = get_scene_grouped_results(episode_results)
         group_name_header = "Scene"
+    elif group_by == "num_objects":
+        results = get_field_grouped_results(episode_results, "num_objects")
+        group_name_header = "# Objects"
+    elif group_by == "num_subtasks":
+        results = get_field_grouped_results(episode_results, "num_subtasks")
+        group_name_header = "# Subtasks"
     else:
-        raise ValueError(f"Invalid group_by value: {group_by}. Must be 'task', 'attributes', or 'scene'.")
+        raise ValueError(f"Invalid group_by value: {group_by}. Must be 'task', 'attributes', 'scene', 'num_objects', or 'num_subtasks'.")
 
     group_name_width = len(group_name_header)
     success_count_width = len("000/000 ")
     success_pct_width = len("100.0% ")
+    success_ci_width = len("[100.0-100.0] ")
     failure_count_width = len("000/000 ")
     failure_pct_width = len("100.0% ")
 
@@ -1086,6 +1135,12 @@ def get_grouped_result_table_str(episode_results: list[dict],
     # Use custom sorting for attributes to prioritize difficulty levels
     if group_by == "attributes":
         sorted_items = sorted(results.items(), key=lambda x: get_attribute_sort_key(x[0]))
+    elif group_by in ("num_objects", "num_subtasks"):
+        # Numeric sort with non-numeric keys (e.g., "(unknown)") pushed to the end.
+        sorted_items = sorted(
+            results.items(),
+            key=lambda x: (0, int(x[0])) if str(x[0]).lstrip('-').isdigit() else (1, str(x[0])),
+        )
     else:
         sorted_items = sorted(results.items())
 
@@ -1095,6 +1150,10 @@ def get_grouped_result_table_str(episode_results: list[dict],
             success_count_str = f"{num_success}/{num_total}"
             success_pct_str = f"{success_rate*100:.1f}%"
             success_pct_csv_str = f"{success_rate*100:.1f}"  # No % for CSV
+            lcb, ucb = beta_ci_bounds(num_success, num_total)
+            success_ci_str = f"[{lcb*100:.1f}-{ucb*100:.1f}]"
+            success_lcb_csv_str = f"{lcb*100:.1f}"
+            success_ucb_csv_str = f"{ucb*100:.1f}"
             failure_count_str = f"{num_failure}/{num_total}"
             failure_pct_str = f"{failure_rate*100:.1f}%"
 
@@ -1282,13 +1341,14 @@ def get_grouped_result_table_str(episode_results: list[dict],
             group_name_width = max(group_name_width, len(group_name))
             success_count_width = max(success_count_width, len(success_count_str))
             success_pct_width = max(success_pct_width, len(success_pct_str))
+            success_ci_width = max(success_ci_width, len(success_ci_str) + 1)
             failure_count_width = max(failure_count_width, len(failure_count_str))
             failure_pct_width = max(failure_pct_width, len(failure_pct_str))
 
-            grouped_data.append((group_name, success_count_str, success_pct_str, success_pct_csv_str, failure_count_str, failure_pct_str, avg_score_str, avg_score_fail_str, success_eps_str, duration_str, stddev_str, wrong_objects_str, wrong_obj_total, wrong_obj_success, wrong_obj_fail, wrong_objects_names_str, ee_sparc_str, ee_sparc_stddev_str, path_length_str, path_length_stddev_str, avg_speed_str, avg_speed_stddev_str, it_per_sec_str, wall_total_str, num_success, num_failure, num_total))
+            grouped_data.append((group_name, success_count_str, success_pct_str, success_pct_csv_str, success_ci_str, success_lcb_csv_str, success_ucb_csv_str, failure_count_str, failure_pct_str, avg_score_str, avg_score_fail_str, success_eps_str, duration_str, stddev_str, wrong_objects_str, wrong_obj_total, wrong_obj_success, wrong_obj_fail, wrong_objects_names_str, ee_sparc_str, ee_sparc_stddev_str, path_length_str, path_length_stddev_str, avg_speed_str, avg_speed_stddev_str, it_per_sec_str, wall_total_str, num_success, num_failure, num_total))
 
     # Calculate total width based on what columns are shown
-    total_width = group_name_width + success_count_width + success_pct_width + failure_count_width + failure_pct_width + 5  # base spacing
+    total_width = group_name_width + success_count_width + success_pct_width + success_ci_width + failure_count_width + failure_pct_width + 6  # base spacing
     if show_scores:
         total_width += avg_score_width + avg_score_fail_width + 2
     if show_duration:
@@ -1317,13 +1377,16 @@ def get_grouped_result_table_str(episode_results: list[dict],
             group_name_header,
             "Success",
             "Success %",
+            "LCB %",
+            "UCB %",
             "Total"
         ]
     else:
         header_parts = [
             f"{group_name_header:<{group_name_width}}",
             f"{'Success':<{success_count_width}}",
-            f"{'  %':<{success_pct_width}}"
+            f"{'  %':<{success_pct_width}}",
+            f"{'95% CI':<{success_ci_width}}"
         ]
     if show_scores:
         if csv:
@@ -1397,6 +1460,10 @@ def get_grouped_result_table_str(episode_results: list[dict],
     total_success_count_str = f"{total_num_success}/{total_num_total}"
     total_success_pct_str = f"{total_success_rate*100:.1f}%"
     total_success_pct_csv_str = f"{total_success_rate*100:.1f}"  # No % for CSV
+    total_lcb, total_ucb = beta_ci_bounds(total_num_success, total_num_total)
+    total_success_ci_str = f"[{total_lcb*100:.1f}-{total_ucb*100:.1f}]"
+    total_success_lcb_csv_str = f"{total_lcb*100:.1f}"
+    total_success_ucb_csv_str = f"{total_ucb*100:.1f}"
     total_failure_count_str = f"{total_num_failure}/{total_num_total}"
     total_failure_pct_str = f"{total_failure_rate*100:.1f}%"
 
@@ -1409,13 +1476,16 @@ def get_grouped_result_table_str(episode_results: list[dict],
             f"TOTAL ({num_groups} {count_label})",
             str(total_num_success),
             total_success_pct_csv_str,
+            total_success_lcb_csv_str,
+            total_success_ucb_csv_str,
             str(total_num_total)
         ]
     else:
         total_row_parts = [
             f"{BOLD}{f'TOTAL ({num_groups} {count_label})':<{group_name_width}}{RESET}",
             f"{GREEN}{total_success_count_str:<{success_count_width}}{RESET}",
-            f"{GREEN}{total_success_pct_str:<{success_pct_width}}{RESET}"
+            f"{GREEN}{total_success_pct_str:<{success_pct_width}}{RESET}",
+            f"{GREEN}{total_success_ci_str:<{success_ci_width}}{RESET}"
         ]
 
     if show_scores:
@@ -1580,7 +1650,7 @@ def get_grouped_result_table_str(episode_results: list[dict],
 
     # Print data rows
     table_lines = []
-    for (group_name, success_count_str, success_pct_str, success_pct_csv_str, failure_count_str, failure_pct_str,
+    for (group_name, success_count_str, success_pct_str, success_pct_csv_str, success_ci_str, success_lcb_csv_str, success_ucb_csv_str, failure_count_str, failure_pct_str,
          avg_score_str, avg_score_fail_str, success_eps_str, duration_str, duration_stddev_str,
          wrong_objects_str, wrong_obj_total, wrong_obj_success, wrong_obj_fail, wrong_objects_names_str,
          ee_sparc_str, ee_sparc_stddev_str, path_length_str, path_length_stddev_str,
@@ -1590,13 +1660,16 @@ def get_grouped_result_table_str(episode_results: list[dict],
                 group_name,
                 str(num_success),
                 success_pct_csv_str,
+                success_lcb_csv_str,
+                success_ucb_csv_str,
                 str(num_total)
             ]
         else:
             row_parts = [
                 f"{group_name:<{group_name_width}}",
                 f"{GREEN}{success_count_str:<{success_count_width}}{RESET}",
-                f"{GREEN}{success_pct_str:<{success_pct_width}}{RESET}"
+                f"{GREEN}{success_pct_str:<{success_pct_width}}{RESET}",
+                f"{success_ci_str:<{success_ci_width}}"
             ]
 
         if show_scores:
@@ -2281,6 +2354,42 @@ def load_task_to_scene_mapping() -> dict[str, str]:
 
     return task_to_scene
 
+
+def _load_task_metadata() -> list[dict]:
+    """Read robolab/tasks/_metadata/task_metadata.json or raise if missing."""
+    metadata_path = os.path.join(TASK_DIR, "_metadata", "task_metadata.json")
+    if not os.path.exists(metadata_path):
+        raise FileNotFoundError(
+            f"Task metadata file not found: {metadata_path}. "
+            "Please run generate_task_metadata.py first to generate the metadata file."
+        )
+    with open(metadata_path, 'r') as f:
+        return json.load(f)
+
+
+def load_task_to_num_objects_mapping() -> dict[str, int]:
+    """Map task_name -> count of entries in contact_object_list (raw, includes 'table')."""
+    mapping = {}
+    for task in _load_task_metadata():
+        task_name = task.get('task_name', '')
+        contact = task.get('contact_objects', '') or ''
+        if not task_name:
+            continue
+        objs = [o.strip() for o in contact.split(',') if o.strip()]
+        mapping[task_name] = len(objs)
+    return mapping
+
+
+def load_task_to_num_subtasks_mapping() -> dict[str, int]:
+    """Map task_name -> num_subtasks (same field used by difficulty scoring)."""
+    mapping = {}
+    for task in _load_task_metadata():
+        task_name = task.get('task_name', '')
+        if not task_name:
+            continue
+        mapping[task_name] = int(task.get('num_subtasks', 0))
+    return mapping
+
 def summarize_experiments_by_instruction_type(episode_results: list[dict] | str, VERBOSE=False, csv=False, csv_compact=False, show_metrics=True):
     """Summarize results comparing different instruction types. (Not yet implemented.)"""
     print("[RoboLab] summarize_experiments_by_instruction_type is not yet implemented.")
@@ -2334,6 +2443,119 @@ def summarize_experiments_by_difficulty(episode_results: list[dict] | str,
         show_metrics=show_metrics,
         show_metric_stddev=VERBOSE,
         csv=csv,
+        csv_compact=csv_compact,
+    )
+
+
+def _summarize_experiments_by_task_field(
+    episode_results: list[dict] | str,
+    field_name: str,
+    mapping_loader,
+    title: str,
+    VERBOSE: bool = False,
+    csv: bool = False,
+    show_metrics: bool = True,
+    csv_compact: bool = False,
+):
+    """
+    Internal helper: bucket episodes by an integer task-level metadata field
+    (e.g. num_objects, num_subtasks) loaded from task_metadata.json, then
+    print a grouped summary table.
+    """
+    if not isinstance(episode_results, list):
+        episode_results = load_file(episode_results)
+
+    if episode_results is None or len(episode_results) == 0:
+        print("No episode results found or file is empty.")
+        return
+
+    try:
+        task_to_value = mapping_loader()
+    except FileNotFoundError as e:
+        print(f"Error: {e}")
+        return
+
+    tagged = []
+    missing_tasks = set()
+    for ep in episode_results:
+        env_name = ep.get("env_name", "")
+        value = task_to_value.get(env_name)
+        if value is None:
+            missing_tasks.add(env_name)
+            continue
+        ep_copy = ep.copy()
+        ep_copy[field_name] = value
+        tagged.append(ep_copy)
+
+    if not tagged:
+        print(
+            f"No episodes with {field_name} metadata found. "
+            f"(Run generate_task_metadata.py to refresh _metadata/task_metadata.json.)"
+        )
+        return
+
+    if missing_tasks:
+        print(f"Note: {len(missing_tasks)} task(s) missing from task_metadata.json: {sorted(missing_tasks)}")
+
+    print_result_table(
+        tagged,
+        group_by=field_name,
+        title=title,
+        show_scores=True,
+        show_eps=False,
+        show_total=False,
+        show_duration=True,
+        show_metrics=show_metrics,
+        show_metric_stddev=VERBOSE,
+        csv=csv,
+        csv_compact=csv_compact,
+    )
+
+
+def summarize_experiments_by_num_objects(episode_results: list[dict] | str,
+                                          VERBOSE=False,
+                                          csv=False,
+                                          show_metrics=True,
+                                          csv_compact=False):
+    """
+    Summarize results grouped by the number of objects in each task.
+
+    "Number of objects" is the count of entries in the task's contact_object_list,
+    as reported by robolab/tasks/_metadata/task_metadata.json. The list is taken
+    verbatim (the table itself is included if it appears in contact_object_list).
+    """
+    _summarize_experiments_by_task_field(
+        episode_results,
+        field_name="num_objects",
+        mapping_loader=load_task_to_num_objects_mapping,
+        title="EXPERIMENT SUMMARY BY NUMBER OF OBJECTS",
+        VERBOSE=VERBOSE,
+        csv=csv,
+        show_metrics=show_metrics,
+        csv_compact=csv_compact,
+    )
+
+
+def summarize_experiments_by_task_length(episode_results: list[dict] | str,
+                                          VERBOSE=False,
+                                          csv=False,
+                                          show_metrics=True,
+                                          csv_compact=False):
+    """
+    Summarize results grouped by task length (num_subtasks).
+
+    num_subtasks is the same metric the difficulty score is built from
+    (difficulty_score = num_subtasks + max(skill_weight)); see
+    compute_difficulty_score in robolab/core/task/subtask_utils.py.
+    """
+    _summarize_experiments_by_task_field(
+        episode_results,
+        field_name="num_subtasks",
+        mapping_loader=load_task_to_num_subtasks_mapping,
+        title="EXPERIMENT SUMMARY BY TASK LENGTH (num_subtasks)",
+        VERBOSE=VERBOSE,
+        csv=csv,
+        show_metrics=show_metrics,
         csv_compact=csv_compact,
     )
 
@@ -2456,26 +2678,26 @@ def summarize_experiments_by_scene(episode_results: list[dict] | str, VERBOSE=Fa
         for task in sorted(unknown_scene_tasks):
             print(f"  - {task}")
 
-def summarize_experiment_results(episode_results: list[dict] | str, VERBOSE=False, csv=False, show_wrong_objects=False, exclude_containers=False, show_metrics=True, show_timing=False, csv_compact=False):
+def summarize_experiment_results(episode_results: list[dict] | str, VERBOSE=False, csv=False, show_wrong_objects=False, exclude_containers=False, show_metrics=True, show_timing=False, csv_compact=False, show_scores=True, show_duration=True, show_eps=False):
     """
     Summarize results for all tasks in an experiment.
 
     Args:
-        results: Results dictionary or path to results.json
         episode_results: List of episode results or path to episode_results.json
-        VERBOSE: If True, print detailed information for each task (shows stddev columns, wrong objects, episode IDs)
+        VERBOSE: If True, show stddev columns next to value columns
         csv: If True, output in CSV format for easy pasting into spreadsheets
         show_wrong_objects: If True, show wrong object grabbed column
         exclude_containers: If True, exclude container objects from wrong object counts
         show_metrics: If True, show trajectory metrics columns (EE SPARC, Path Length, Avg Speed)
+        show_timing: If True, show wall-clock timing columns
         csv_compact: If True, combine value and stddev into single column like '-9.14 (± 4.72)'
+        show_scores: If True, show Score(total) / Score(fail) columns
+        show_duration: If True, show Time(s) column
+        show_eps: If True, show Eps(succ) episode ID column
     """
-    # Load data from files or dicts
-    # results = load_results_data(results)
     if not isinstance(episode_results, list):
         episode_results = load_file(episode_results)
 
-    # Check if episode_results is None or empty
     if episode_results is None or len(episode_results) == 0:
         print(f"No episode results found or file is empty.")
         return
@@ -2484,14 +2706,14 @@ def summarize_experiment_results(episode_results: list[dict] | str, VERBOSE=Fals
         episode_results,
         group_by="task",
         title="EXPERIMENT SUMMARY",
-        show_scores=True,
-        show_eps=VERBOSE,
+        show_scores=show_scores,
+        show_eps=show_eps,
         show_header=True,
-        show_duration=True,
-        show_wrong_objects=show_wrong_objects or VERBOSE,  # Show wrong objects in verbose mode
+        show_duration=show_duration,
+        show_wrong_objects=show_wrong_objects,
         exclude_containers=exclude_containers,
         show_metrics=show_metrics,
-        show_metric_stddev=VERBOSE,  # Show stddev columns in verbose mode
+        show_metric_stddev=VERBOSE,
         show_timing=show_timing,
         csv=csv,
         csv_compact=csv_compact,

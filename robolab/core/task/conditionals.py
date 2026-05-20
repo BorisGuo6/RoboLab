@@ -200,9 +200,20 @@ def object_in_container(
     K: int = 1,
     env_id: int | None = None,
 ):
-    """Checks if objects are in an open-top container."""
+    """Checks if objects are in an open-top container.
+
+    Geometric check: the object's centroid is transformed into the container's local
+    frame and bounds-checked against the container's local AABB (with one
+    container-height of open-top slack along the container's local +z). Because the
+    check is performed in the container's coordinates, the predicate is invariant to
+    container orientation — a flipped or tipped container correctly fails.
+    """
     def condition(world, obj, env_id=None):
-        result = in_opentop_container(world, obj, container, tolerance, env_id=env_id)
+        result = in_opentop_container(
+            world, obj, container,
+            tolerance=tolerance,
+            env_id=env_id,
+        )
         if require_contact_with is True:
             result = _and(result, in_contact(world, obj, container, env_id=env_id))
         elif require_contact_with:
@@ -223,6 +234,7 @@ def object_on_top(
     env,
     object: str | list[str],
     reference_object: str,
+    tolerance: float = 0.01,
     require_contact_with: Union[str, list[str]] = None,
     require_gripper_detached: bool = False,
     gripper_name: str = "gripper",
@@ -230,9 +242,21 @@ def object_on_top(
     K: int = 1,
     env_id: int | None = None,
 ):
-    """Checks if objects are stably supported on the top surface of reference_object."""
+    """Checks if objects are stably supported on the top surface of reference_object.
+
+    The check is the AND of:
+      - is_supported_on_surface: contact-force from surface on obj is non-trivial,
+        upward, and within a 45° cone of vertical.
+      - centroid_in_footprint: obj's centroid xy lies within the surface's AABB
+        (with ``tolerance`` slack). z is intentionally not bounded — concave
+        surfaces (plates with wells, tilted/overhanging objects) make any
+        all-corners-above-top rule too brittle.
+    """
     def condition(world, obj, env_id=None):
         result = world.is_supported_on_surface(obj, reference_object, env_id=env_id)
+        result = _and(result, centroid_in_footprint(
+            world, obj, reference_object, tolerance=tolerance, env_id=env_id
+        ))
         if require_contact_with is not None:
             result = _and(result, in_contact(world, obj, require_contact_with, env_id=env_id))
         if require_gripper_detached:
@@ -598,7 +622,12 @@ def object_outside_of(
     K: int = 1,
     env_id: int | None = None,
 ):
-    """Checks if objects are outside of a container."""
+    """Checks if objects are outside the container.
+
+    Symmetric with ``object_in_container``: the object is "outside" iff fewer
+    than half of its hull vertices fall in the container's open-top hull
+    (``frac_inside < 0.5``). Equivalent to ``not in_opentop_container``.
+    """
     def condition(world, obj, env_id=None):
         result = _not(in_opentop_container(world, obj, container, tolerance, env_id=env_id))
         if require_contact_with is True:
@@ -851,7 +880,11 @@ def object_outside_of_and_on_surface(
     K: int = 1,
     env_id: int | None = None,
 ):
-    """Checks if objects are outside of a container AND stably supported on a surface."""
+    """Checks if objects are outside of a container AND stably supported on a surface.
+
+    Symmetric with ``object_in_container``: ``not in_opentop_container``
+    (frac_inside < 0.5) for the container check; surface support unchanged.
+    """
     def condition(world, obj, env_id=None):
         result = _and(
             _not(in_opentop_container(world, obj, container, tolerance, env_id=env_id)),

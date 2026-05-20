@@ -3,11 +3,19 @@
 # isort: skip_file
 
 """
-Run policy evaluation with lighting variations.
+Run policy evaluation across a TASK × BACKGROUND matrix.
+
+This script registers every (task, background) combination as a separate env
+(via auto_register_droid_envs_bg_variations) and evaluates each one. Use it to
+measure robustness of the SAME task across MANY backgrounds.
+
+For "give each task a different random background in a single benchmark pass"
+(per-task random, NOT a matrix sweep), use `run_eval.py --randomize-background`
+instead. See docs/background.md → "Choosing a Background Strategy".
 
 Usage:
-    $ python run_eval_lighting.py --headless
-    $ python run_eval_lighting.py --task BananaInBowlTableTask --headless
+    $ python run_eval_background_variation.py --headless
+    $ python run_eval_background_variation.py --task BananaInBowlTableTask --headless
 
 Output:
     Results are saved to: output/<output_folder_name>/
@@ -16,7 +24,6 @@ Output:
 import argparse
 import cv2 # Must import this before isaaclab. Do not remove
 import os
-import re
 import traceback
 import sys
 from isaaclab.app import AppLauncher
@@ -32,8 +39,8 @@ parser.add_argument("--tag", nargs='+', default=None,
                        help="List of tags of tasks to evaluate on ")
 parser.add_argument("--task-dirs", nargs='+', default=DEFAULT_TASK_SUBFOLDERS,
                        help="List of task directories to evaluate on")
-parser.add_argument("--policy", choices=["pi0", "pi0_fast", "paligemma", "paligemma_fast", "pi05", "gr00t", "dreamzero", "molmo", "openvla", "openvla_oft"], default="pi05",
-                       help="Action-prediction backend to use (default: pi05)")
+parser.add_argument("--policy", choices=["pi0", "pi0_fast", "paligemma", "paligemma_fast", "pi05"], default="pi05",
+                       help="Pi0-family variant to use (default: pi05)")
 parser.add_argument("--num-runs", "--num_runs", type=int, default=1,
                        help="Number of sequential runs per task (default: 1). Total episodes = num_runs * num_envs. Prefer increasing --num_envs for more episodes. Only increase --num-runs if you run out of GPU memory with the desired num_envs.")
 parser.add_argument("--enable-subtask", "--enable_subtask", action="store_true",
@@ -58,9 +65,10 @@ simulation_app = app_launcher.app
 
 from robolab.constants import PACKAGE_DIR, set_output_dir # noqa
 from robolab.core.environments.runtime import create_env # noqa
-from robolab.eval import create_client, run_episode, summarize_run # noqa
-from robolab.registrations.droid_jointpos.auto_env_registrations_lighting_variations import auto_register_droid_envs_light_intensity, auto_register_droid_envs_shadows, auto_register_droid_envs_colored_lights # noqa
-from robolab.core.environments.factory import get_envs # noqa
+from robolab.eval import run_episode, summarize_run # noqa
+from policies.pi0_family.client import Pi0DroidJointposClient # noqa
+from robolab.registrations.droid.auto_env_registrations_bg_variations import auto_register_droid_envs_bg_variations # noqa
+from robolab.core.environments.factory import get_envs_by_tag # noqa
 from robolab.core.logging.results import check_all_episodes_complete, check_run_complete # noqa
 from robolab.core.logging.results import init_experiment, summarize_experiment_results # noqa
 import robolab.constants # noqa
@@ -70,83 +78,32 @@ robolab.constants.RECORD_IMAGE_DATA = args_cli.record_image_data
 robolab.constants.VERBOSE = args_cli.enable_verbose
 robolab.constants.DEBUG = args_cli.enable_debug
 
-########################################################
-# Lighting variations
-########################################################
-lighting_variations = [10, 5000]
-for intensity in lighting_variations:
-    auto_register_droid_envs_light_intensity(task_dirs=args_cli.task_dirs, lighting_intensity=intensity)
-auto_register_droid_envs_shadows(task_dirs=args_cli.task_dirs)
-auto_register_droid_envs_colored_lights(task_dirs=args_cli.task_dirs)
+auto_register_droid_envs_bg_variations(task_dirs=args_cli.task_dirs)
 
-tasks = []
-for task in args_cli.task:
-    tasks.extend([task + f"_LightingIntensity{lighting_intensity}" for lighting_intensity in lighting_variations])
-    tasks.extend([task + "_Directional"])
-    tasks.extend([task + "_RedLight", task + "_BlueLight", task + "_GreenLight"])
-
-
-def extract_lighting_params(task_env: str) -> dict:
-    """Extract lighting parameters from the task environment name."""
-    intensity_match = re.search(r'_LightingIntensity(\d+)', task_env)
-    if intensity_match:
-        return {
-            "lighting_intensity": int(intensity_match.group(1)),
-            "lighting_color": "natural",
-            "lighting_type": "domelight",
-        }
-    if "_Directional" in task_env:
-        return {
-            "lighting_intensity": 200,
-            "lighting_color": "natural",
-            "lighting_type": "directional",
-        }
-    color_patterns = {
-        "_RedLight": "red",
-        "_BlueLight": "blue",
-        "_GreenLight": "green",
-    }
-    for pattern, color in color_patterns.items():
-        if pattern in task_env:
-            return {
-                "lighting_intensity": 100,
-                "lighting_color": color,
-                "lighting_type": "sphere",
-            }
-    return {
-        "lighting_intensity": 5000,
-        "lighting_color": "natural",
-        "lighting_type": "sphere",
-    }
-########################################################
 
 def main():
     """Main function."""
     if args_cli.output_folder_name is None:
-        args_cli.output_folder_name = get_timestamp() + f"_{args_cli.policy}_lighting_variation"
+        args_cli.output_folder_name = get_timestamp() + f"_{args_cli.policy}_background_variation"
 
     output_dir = os.path.join(PACKAGE_DIR, "output", args_cli.output_folder_name)
     os.makedirs(output_dir, exist_ok=True)
 
-    if tasks:
-        task_envs = get_envs(task=tasks)
-    elif args_cli.tag:
-        task_envs = get_envs(tag=args_cli.tag)
-    else:
-        task_envs = get_envs()
+    task_envs = get_envs_by_tag("background_variations")
 
     num_envs = args_cli.num_envs
     num_runs = args_cli.num_runs
     total_episodes = num_runs * num_envs
 
     print(f"Output directory: {output_dir}")
-    print(f"Running {len(task_envs)} lighting variation environments, {total_episodes} episodes each")
+    print(f"Running {len(task_envs)} background variation environments, {total_episodes} episodes each")
 
     episode_results_file, episode_results = init_experiment(output_dir)
 
     for task_env in task_envs:
-        task_name = task_env.split("_")[0]
-        lighting_params = extract_lighting_params(task_env)
+
+        bg_name = task_env.split("_bg_")[-1] if "_bg_" in task_env else "default"
+        task_name = task_env.split("_bg_")[0]
         scene_output_dir = os.path.join(output_dir, task_env)
         os.makedirs(scene_output_dir, exist_ok=True)
         set_output_dir(scene_output_dir)
@@ -155,14 +112,16 @@ def main():
             print(f"\033[96m[RoboLab] Task `{task_env}` already done. Skipping.\033[0m")
             continue
 
-        env, env_cfg = create_env(task_env,
+        env, env_cfg = create_env(
+            scene=task_env,
             device=args_cli.device,
             num_envs=num_envs,
             use_fabric=True,
-            policy=args_cli.policy)
+            policy=args_cli.policy,
+        )
 
-        client = create_client(
-            args_cli.policy,
+        client = Pi0DroidJointposClient(
+            policy_variant=args_cli.policy,
             remote_host=args_cli.remote_host,
             remote_port=args_cli.remote_port,
         )
@@ -200,9 +159,10 @@ def main():
                 enable_subtask_progress=robolab.constants.ENABLE_SUBTASK_PROGRESS_CHECKING,
                 task_name=task_name,
                 extra_fields={
-                    "lighting_intensity": lighting_params["lighting_intensity"],
-                    "lighting_color": lighting_params["lighting_color"],
-                    "lighting_type": lighting_params["lighting_type"],
+                    "background": bg_name,
+                    "lighting_intensity": 5000,
+                    "lighting_color": "natural",
+                    "lighting_type": "sphere",
                 },
             )
 

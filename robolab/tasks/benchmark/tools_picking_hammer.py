@@ -23,7 +23,7 @@ class ToolsPickingHammerTerminations:
 
 @dataclass
 class ToolsPickingHammerTask(Task):
-    contact_object_list = ["table", "clamp", "cordless_drill", "spring_clamp", "husky_hammer", "blue_hammer", "red_hammer", "wood_hammer", "left_bin", "center_bin", "right_bin"]
+    contact_object_list = ["table", "clamp", "cordless_drill", "spring_clamp", "husky_hammer", "blue_hammer", "red_hammer", "wood_hammer", "left_bin", "center_bin", "right_bin", "clamp_01"]
     scene = import_scene("tools_picking.usda", contact_object_list)
     terminations = ToolsPickingHammerTerminations
     instruction = {

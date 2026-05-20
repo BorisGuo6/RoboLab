@@ -15,7 +15,7 @@ Server launch example:
         socket_test_optimized_AR.py --port 5000 --enable-dit-cache --model-path <path/to/checkpoint>
 
 Usage:
-    python examples/policy/run_eval.py --policy dreamzero --remote-port 5000 --task BananaInBowlTableTask
+    python policies/dreamzero/run.py --remote-port 5000 --task BananaInBowlTableTask
 """
 
 import logging
@@ -384,7 +384,7 @@ class DreamZeroClient(InferenceClient):
 
     def _resize_image(self, image: np.ndarray, height: int, width: int) -> np.ndarray:
         if self.resize == "pad":
-            from .image_tools import resize_with_pad
+            from robolab.core.utils.image_utils import resize_with_pad
             return resize_with_pad(image, height, width)
         import cv2
         interp = cv2.INTER_AREA if self.resize == "area" else cv2.INTER_LINEAR

@@ -19,7 +19,7 @@ class DishesInBinTerminations:
 
 @dataclass
 class DishesInBinTask(Task):
-    contact_object_list = ["mug", "mug_01", "bowl", "grey_bin", "table"]
+    contact_object_list = ["mug", "mug_01", "bowl", "grey_bin", "table", "banana_near", "banana_far", "rubiks_cube_top", "rubiks_cube_middle", "rubiks_cube_bottom", "ketchup_bottle"]
     scene = import_scene("mugs2_bananas2_ketchup_rubiks3_bin.usda", contact_object_list)
     terminations = DishesInBinTerminations
     instruction = {

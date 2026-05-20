@@ -118,7 +118,7 @@ bg_config = generate_background_config(
 
 > **Task × background matrix:** registers `N tasks × M backgrounds` envs (one per combination), so each task is evaluated separately under each background. Use this to measure robustness of the *same* task across *many* backgrounds.
 
-Registered via `auto_register_droid_envs_bg_variations()` in `robolab/registrations/droid_jointpos/auto_env_registrations_bg_variations.py`. The built-in evaluation script `examples/policy/run_eval_background_variation.py` loops over the registered matrix and reports per-(task, bg) results.
+Registered via `auto_register_droid_envs_bg_variations()` in `robolab/registrations/droid/auto_env_registrations_bg_variations.py`. The built-in evaluation script `policies/pi0_family/run_background_variation.py` loops over the registered matrix and reports per-(task, bg) results.
 
 > **Not what you want?** If you want each task in the benchmark to get *one* random background (so the run as a whole spans many backgrounds without inflating env count), use [Per-Run Random Background per Task](#per-run-random-background-per-task) instead.
 
@@ -127,7 +127,7 @@ Registered via `auto_register_droid_envs_bg_variations()` in `robolab/registrati
 `auto_register_droid_envs` accepts `randomize_background=True` to sample one random background per task at registration time (excluding the default `home_office.exr`). Each registered env gets one fixed background for the entire run; the chosen texture lands in the per-task `env_cfg.json` under `scene.background.dome_light.spawn.texture_file`.
 
 ```python
-from robolab.registrations.droid_jointpos.auto_env_registrations import auto_register_droid_envs
+from robolab.registrations.droid.auto_env_registrations_jointpos import auto_register_droid_envs
 
 auto_register_droid_envs(
     randomize_background=True,
@@ -138,7 +138,7 @@ auto_register_droid_envs(
 Or via `run_eval.py`:
 
 ```bash
-python examples/policy/run_eval.py --headless --randomize-background --background-seed 42
+python policies/pi0_family/run.py --headless --randomize-background --background-seed 42
 ```
 
 Mechanism: a per-task factory closure is passed as `background_cfg`, and the factory (`robolab.core.environments.factory._resolve_per_task_kwargs`) invokes it once per task during registration. Without `--background-seed`, sampling is non-deterministic across invocations.

@@ -18,9 +18,11 @@ from typing import Callable
 
 import numpy as np
 import torch
+from isaaclab.utils.math import quat_apply, quat_apply_inverse
 
 import robolab.constants
 from robolab.constants import DEBUG
+from robolab.core.task.hull_check import build_local_hull, point_in_hull
 from robolab.core.utils.geometry_utils import spatial_condition_check_vector_based
 from robolab.core.utils.transform_utils import transform_pose_from_w_to_b_vectorized
 from robolab.core.world.world_state import get_world
@@ -198,81 +200,207 @@ def _bbox_min_max(corners, env_id):
 
 
 def enclosed(world, inside_obj: str, outside_obj: str, tolerance: float = 0.0, env_id: int | None = None):
-    """Check if the bounding box of inside_obj is fully enclosed in outside_obj's bbox."""
-    container_corners, _ = world.get_bbox(outside_obj, env_id=env_id)
-    inside_corners, _ = world.get_bbox(inside_obj, env_id=env_id)
+    """Check if inside_obj's hull centroid is inside outside_obj's closed convex hull.
+
+    Same centroid-in-hull primitive as ``inside``, but uses the *full* (closed)
+    plane set rather than the open-top variant.
+
+    Returns ``bool`` for single-env, ``Tensor(N,) bool`` for batched.
+    """
+    result = _obj_centroid_in_container(world, inside_obj, outside_obj, env_id, planes_attr="planes_full")
+    if DEBUG and env_id is not None:
+        print(f"enclosed: '{inside_obj}' centroid in '{outside_obj}' closed hull -> {result}")
+    return result
+
+
+def centroid_in_footprint(world, obj: str, surface: str, tolerance: float = 0.01, env_id: int | None = None):
+    """Check if obj's centroid xy lies within surface's AABB footprint (z is ignored)."""
+    surface_corners, _ = world.get_bbox(surface, env_id=env_id)
+    _, centroid = world.get_bbox(obj, env_id=env_id)
 
     if env_id is not None:
-        min_x, max_x, min_y, max_y, min_z, max_z = _bbox_min_max(container_corners, env_id)
-        min_x -= tolerance; max_x += tolerance
-        min_y -= tolerance; max_y += tolerance
-        min_z -= tolerance; max_z += tolerance
-        result = all(
-            min_x <= corner[0] <= max_x and
-            min_y <= corner[1] <= max_y and
-            min_z <= corner[2] <= max_z
-            for corner in inside_corners
+        min_x, max_x, min_y, max_y, _, _ = _bbox_min_max(surface_corners, env_id)
+        result = bool(
+            min_x - tolerance <= centroid[0] <= max_x + tolerance and
+            min_y - tolerance <= centroid[1] <= max_y + tolerance
         )
         if DEBUG:
-            print(f"enclosed: '{inside_obj}' fully enclosed in '{outside_obj}' (tol={tolerance}) -> {result}")
+            print(f"centroid_in_footprint: '{obj}' xy in '{surface}' (tol={tolerance}) -> {result}")
         return result
     else:
-        # Vectorized: container_corners (N, 8, 3), inside_corners (N, 8, 3)
-        c_mins, c_maxs = _bbox_min_max(container_corners, env_id)
-        # All 8 inside corners must be within container bounds
-        x_ok = (inside_corners[:, :, 0] >= c_mins[:, 0:1] - tolerance) & (inside_corners[:, :, 0] <= c_maxs[:, 0:1] + tolerance)
-        y_ok = (inside_corners[:, :, 1] >= c_mins[:, 1:2] - tolerance) & (inside_corners[:, :, 1] <= c_maxs[:, 1:2] + tolerance)
-        z_ok = (inside_corners[:, :, 2] >= c_mins[:, 2:3] - tolerance) & (inside_corners[:, :, 2] <= c_maxs[:, 2:3] + tolerance)
-        all_corners_inside = (x_ok & y_ok & z_ok).all(dim=1)  # (N,)
-        return all_corners_inside
+        mins, maxs = _bbox_min_max(surface_corners, env_id)
+        x_ok = (centroid[:, 0] >= mins[:, 0] - tolerance) & (centroid[:, 0] <= maxs[:, 0] + tolerance)
+        y_ok = (centroid[:, 1] >= mins[:, 1] - tolerance) & (centroid[:, 1] <= maxs[:, 1] + tolerance)
+        return x_ok & y_ok
+
+
+def _read_local_mesh_points(world, body_name: str) -> np.ndarray:
+    """Concatenated mesh points of ``body_name`` in the prim's own local frame.
+
+    Reads ``points`` directly from descendant ``UsdGeom.Mesh`` prims and composes
+    each mesh's local-to-prim transform. Sidesteps a known issue with
+    ``UsdGeom.BBoxCache.ComputeUntransformedBound``: it stores the geometry's
+    *world-space* AABB plus the prim's inverse-world matrix, and
+    ``ComputeAlignedRange`` re-axis-aligns after applying the inverse — both
+    axis-alignments are lossy for any prim whose authored rotation isn't an
+    axis-aligned flip, producing a box up to ~2× the canonical extents.
+
+    Returns:
+        (P, 3) array of points in body-local frame, **expressed in world units (meters)**.
+
+    Important: composes the mesh's full local-to-world (which includes any USD
+    metersPerUnit conversion + xformOp:scale on ancestors) and then undoes only
+    the prim's *rotation + translation* — explicitly NOT the prim's scale. This
+    leaves the mesh points expressed in the prim's rotated frame but at world
+    scale. Without this, prims authored in non-meter units (e.g. cm) end up
+    with hull dimensions 100x larger than world coordinates, breaking
+    point-in-hull tests against world-frame poses.
+    """
+    from pxr import Gf, Usd, UsdGeom
+
+    prim = world._get_prim(body_name, env_id=0)
+    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    prim_xform = xform_cache.GetLocalToWorldTransform(prim)
+    # Build a no-scale-no-shear world-to-prim that preserves world's meter units.
+    prim_xform_no_scale = prim_xform.RemoveScaleShear()
+    prim_world_to_local = prim_xform_no_scale.GetInverse()
+
+    all_points: list[list[float]] = []
+    for child in Usd.PrimRange(prim):
+        if not child.IsA(UsdGeom.Mesh):
+            continue
+        mesh = UsdGeom.Mesh(child)
+        purpose = mesh.GetPurposeAttr().Get()
+        if purpose not in (None, UsdGeom.Tokens.default_):
+            continue
+        points = mesh.GetPointsAttr().Get()
+        if points is None or len(points) == 0:
+            continue
+        mesh_to_world = xform_cache.GetLocalToWorldTransform(child)
+        for p in points:
+            p_world = mesh_to_world.Transform(p)        # true world meters
+            p_local = prim_world_to_local.Transform(Gf.Vec3d(p_world))  # rotated to prim frame, meters preserved
+            all_points.append([p_local[0], p_local[1], p_local[2]])
+    if not all_points:
+        raise ValueError(f"_read_local_mesh_points: no mesh geometry found under prim '{body_name}'")
+    return np.asarray(all_points, dtype=np.float64)
+
+
+def _untransformed_aabb(world, body_name: str):
+    """Truly-local AABB of body_name's geometry, in the prim's own frame, independent of
+    its authored xform. Cached on the world singleton.
+
+    Backed by ``_read_local_mesh_points``; takes min/max along each axis.
+    """
+    cache_attr = "_untransformed_aabb_cache"
+    if not hasattr(world, cache_attr):
+        setattr(world, cache_attr, {})
+    cache = getattr(world, cache_attr)
+    if body_name not in cache:
+        points = _read_local_mesh_points(world, body_name)
+        device = world.env.device
+        cache[body_name] = (
+            torch.tensor(points.min(axis=0), dtype=torch.float32, device=device),
+            torch.tensor(points.max(axis=0), dtype=torch.float32, device=device),
+        )
+    return cache[body_name]
+
+
+def _untransformed_hull(world, body_name: str):
+    """Convex hull of ``body_name``'s mesh in body-local frame. Cached on world.
+
+    Backed by ``_read_local_mesh_points`` + ``build_local_hull``. The hull is
+    computed once at first call; subsequent calls return the cached
+    ``LocalHull``.
+
+    Returns:
+        ``hull_check.LocalHull`` — vertices (V, 3) used on the object side,
+        plane sets (F, 4) and (F_kept, 4) used on the container side.
+    """
+    cache_attr = "_untransformed_hull_cache"
+    if not hasattr(world, cache_attr):
+        setattr(world, cache_attr, {})
+    cache = getattr(world, cache_attr)
+    if body_name not in cache:
+        points = _read_local_mesh_points(world, body_name)
+        cache[body_name] = build_local_hull(points, device=world.env.device)
+    return cache[body_name]
+
+
+def _obj_centroid_in_container(
+    world,
+    inside_obj: str,
+    outside_obj: str,
+    env_id: int | None,
+    planes_attr: str = "planes_open_top",
+):
+    """Test whether ``inside_obj``'s hull-vertex centroid lies inside ``outside_obj``'s hull.
+
+    The centroid of the object's convex-hull vertices is transformed
+    world→object→world→container-local once per call and tested against the
+    container's plane set. ``planes_attr`` selects which face set:
+      - ``"planes_open_top"`` (default) — top faces dropped, polytope unbounded
+        upward along container-local +z. Used by ``inside`` / ``in_opentop_container``.
+      - ``"planes_full"`` — closed hull. Used by ``enclosed``.
+
+    Boolean semantics — clean ``not`` symmetric with ``in_opentop_container``.
+    Sidesteps the elongated-object frac-threshold pathology where part of an
+    object's hull dangles into the container even when its center is clearly
+    outside.
+
+    Returns:
+        ``Tensor(N,) bool`` when ``env_id`` is None, scalar ``bool`` when ``env_id`` is an int.
+    """
+    obj_hull = _untransformed_hull(world, inside_obj)
+    cav_hull = _untransformed_hull(world, outside_obj)
+    cav_planes = getattr(cav_hull, planes_attr)
+    obj_centroid_local = obj_hull.centroid  # (3,) — precomputed, see LocalHull
+
+    obj_pos, obj_quat = world.get_pose(inside_obj, env_id=env_id)
+    cav_pos, cav_quat = world.get_pose(outside_obj, env_id=env_id)
+
+    is_single = env_id is not None
+    if is_single:
+        obj_pos = obj_pos.unsqueeze(0)        # (1, 3)
+        obj_quat = obj_quat.unsqueeze(0)      # (1, 4)
+        cav_pos = cav_pos.unsqueeze(0)
+        cav_quat = cav_quat.unsqueeze(0)
+
+    N = obj_pos.shape[0]
+    centroid_b = obj_centroid_local.unsqueeze(0).expand(N, 3)        # (N, 3)
+    pt_world = quat_apply(obj_quat, centroid_b) + obj_pos              # (N, 3)
+    pt_cav = quat_apply_inverse(cav_quat, pt_world - cav_pos)          # (N, 3)
+
+    inside = point_in_hull(pt_cav, cav_planes)                         # (N,) bool
+
+    return bool(inside[0]) if is_single else inside
 
 
 def inside(world, inside_obj: str, outside_obj: str, tolerance: float = 0.0, env_id: int | None = None):
-    """Check if the centroid of inside_obj is inside outside_obj's bbox."""
-    container_corners, _ = world.get_bbox(outside_obj, env_id=env_id)
-    _, centroid = world.get_bbox(inside_obj, env_id=env_id)
+    """Check if inside_obj's hull centroid is inside outside_obj's open-top hull.
 
-    if env_id is not None:
-        min_x, max_x, min_y, max_y, min_z, max_z = _bbox_min_max(container_corners, env_id)
-        result = bool(
-            min_x - tolerance <= centroid[0] <= max_x + tolerance and
-            min_y - tolerance <= centroid[1] <= max_y + tolerance and
-            min_z - tolerance <= centroid[2] <= max_z + tolerance
-        )
-        if DEBUG:
-            print(f"inside: centroid of '{inside_obj}' in bbox of '{outside_obj}' (tol={tolerance}) -> {result}")
-        return result
-    else:
-        mins, maxs = _bbox_min_max(container_corners, env_id)
-        x_ok = (centroid[:, 0] >= mins[:, 0] - tolerance) & (centroid[:, 0] <= maxs[:, 0] + tolerance)
-        y_ok = (centroid[:, 1] >= mins[:, 1] - tolerance) & (centroid[:, 1] <= maxs[:, 1] + tolerance)
-        z_ok = (centroid[:, 2] >= mins[:, 2] - tolerance) & (centroid[:, 2] <= maxs[:, 2] + tolerance)
-        return x_ok & y_ok & z_ok
+    Boolean centroid-in-hull test. The legacy ``tolerance`` parameter is accepted
+    for backward compatibility but unused — geometry of the convex hull subsumes
+    the noise margin.
+
+    Returns ``bool`` for single-env, ``Tensor(N,) bool`` for batched.
+    """
+    result = _obj_centroid_in_container(world, inside_obj, outside_obj, env_id)
+    if DEBUG and env_id is not None:
+        print(f"inside: '{inside_obj}' centroid in '{outside_obj}' open-top hull -> {result}")
+    return result
 
 
 def in_opentop_container(world, inside_obj: str, outside_obj: str, tolerance: float = 0.0, env_id: int | None = None):
-    """Check if centroid of inside_obj is in an open-top container (2x height allowance)."""
-    container_corners, _ = world.get_bbox(outside_obj, env_id=env_id)
-    _, centroid = world.get_bbox(inside_obj, env_id=env_id)
+    """Alias of ``inside`` under the convex-hull-with-open-top-air model.
 
-    if env_id is not None:
-        min_x, max_x, min_y, max_y, min_z, max_z = _bbox_min_max(container_corners, env_id)
-        height = max_z - min_z
-        result = bool(
-            min_x - tolerance <= centroid[0] <= max_x + tolerance and
-            min_y - tolerance <= centroid[1] <= max_y + tolerance and
-            min_z - tolerance <= centroid[2] <= max_z + height
-        )
-        if DEBUG:
-            print(f"in_opentop_container: centroid of '{inside_obj}' in open-top '{outside_obj}' (tol={tolerance}) -> {result}")
-        return result
-    else:
-        mins, maxs = _bbox_min_max(container_corners, env_id)
-        height = maxs[:, 2] - mins[:, 2]
-        x_ok = (centroid[:, 0] >= mins[:, 0] - tolerance) & (centroid[:, 0] <= maxs[:, 0] + tolerance)
-        y_ok = (centroid[:, 1] >= mins[:, 1] - tolerance) & (centroid[:, 1] <= maxs[:, 1] + tolerance)
-        z_ok = (centroid[:, 2] >= mins[:, 2] - tolerance) & (centroid[:, 2] <= maxs[:, 2] + height)
-        return x_ok & y_ok & z_ok
+    Retained so existing tasks (e.g. ``BananasOutOfBinTask``) using this name
+    keep working without renaming.
+    """
+    result = _obj_centroid_in_container(world, inside_obj, outside_obj, env_id)
+    if DEBUG and env_id is not None:
+        print(f"in_opentop_container: '{inside_obj}' centroid in '{outside_obj}' -> {result}")
+    return result
 
 
 # Vertical spatial checks

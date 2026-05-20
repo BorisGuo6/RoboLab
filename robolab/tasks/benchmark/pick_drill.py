@@ -21,7 +21,7 @@ class PickDrillTerminations:
 
 @dataclass
 class PickDrillTask(Task):
-    contact_object_list = ["cordless_drill", "table"]
+    contact_object_list = ["red_mug", "bowl", "ceramic_mug", "upright_white_mug", "sideways_white_mug", "cordless_drill", "measuring_cup", "table"]
     scene = import_scene("mugs4_measuringcup_drill_bowl.usda", contact_object_list)
     terminations = PickDrillTerminations
     instruction = {

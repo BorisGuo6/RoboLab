@@ -22,7 +22,7 @@ Define which sensor data the simulator should provide to your policy. This uses 
 # Image observations — generated from a list of camera configs, so the obs terms
 # automatically match whatever cameras you attach to the scene.
 from robolab.core.observations.observation_utils import generate_image_obs_from_cameras
-from robolab.registrations.droid_jointpos.camera_presets import WRIST_LEFT
+from robolab.registrations.droid.camera_presets import WRIST_LEFT
 
 ImageObsCfg = generate_image_obs_from_cameras(WRIST_LEFT)
 
@@ -30,7 +30,7 @@ ImageObsCfg = generate_image_obs_from_cameras(WRIST_LEFT)
 from robolab.robots.droid import ProprioceptionObservationCfg
 ```
 
-Presets live in `robolab/registrations/droid_jointpos/camera_presets.py`: `WRIST`, `WRIST_LEFT`, `WRIST_RIGHT`, `WRIST_LEFT_RIGHT`, `WRIST_LEFT_RIGHT_HEAD`, `LEFT_RIGHT`. Pick one or pass your own list. Viewport-only cameras (used for recorded video, not policy input) are attached separately inside the registration function and do not belong in these presets.
+Presets live in `robolab/registrations/droid/camera_presets.py`: `WRIST`, `WRIST_LEFT`, `WRIST_RIGHT`, `WRIST_LEFT_RIGHT`, `WRIST_LEFT_RIGHT_HEAD`, `LEFT_RIGHT`. Pick one or pass your own list. Viewport-only cameras (used for recorded video, not policy input) are attached separately inside the registration function and do not belong in these presets.
 
 If you need different observations (e.g., different cameras, depth data, or custom proprioception), define your own:
 
@@ -78,7 +78,7 @@ from robolab.constants import DEFAULT_TASK_SUBFOLDERS, TASK_DIR
 def register_envs(task_dirs=DEFAULT_TASK_SUBFOLDERS, task=None, cameras=None):
     from robolab.core.environments.factory import auto_discover_and_create_cfgs
     from robolab.core.observations.observation_utils import generate_image_obs_from_cameras, generate_obs_cfg
-    from robolab.registrations.droid_jointpos.camera_presets import WRIST_LEFT
+    from robolab.registrations.droid.camera_presets import WRIST_LEFT
     from robolab.robots.droid import (
         DroidCfg,
         DroidJointPositionActionCfg,
@@ -139,7 +139,7 @@ print_env_table()
 
 This prints a table of all registered environments with their configurations.
 
-> **Note:** It is recommended that you check your environments are created correctly before running any policy. You can also run `scripts/check_registered_envs.py` with your registration function.
+> **Note:** It is recommended that you check your environments are created correctly before running any policy. You can also run `uv run pytest tests/test_registered_envs.py -v` to verify your registration function populates the env factory.
 
 ## Registering Your Own Custom Tasks
 
@@ -187,7 +187,7 @@ You can register both benchmark tasks and your own tasks in the same function �
 For complete working examples inside the RoboLab repo:
 
 - [`robolab/registrations/example/auto_env_registration.py`](../robolab/registrations/example/auto_env_registration.py) — Basic registration example
-- [`robolab/registrations/droid_jointpos/auto_env_registrations.py`](../robolab/registrations/droid_jointpos/auto_env_registrations.py) — Full DROID robot registration
+- [`robolab/registrations/droid/auto_env_registrations_jointpos.py`](../robolab/registrations/droid/auto_env_registrations_jointpos.py) — Full DROID robot registration
 
 ---
 

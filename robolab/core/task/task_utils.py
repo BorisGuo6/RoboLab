@@ -230,7 +230,16 @@ def resolve_task_path(task: str, task_dir: str | Path) -> tuple[str, str]:
     # Case 3: Task class name - searches in task_dir for all files, and loop through each file to find the class name.
     else:
         task_class_name_to_find = task
-        all_task_files = find_task_files(str(task_dir))
+        # Honor DEFAULT_TASK_SUBFOLDERS so that test/legacy variants of a task
+        # cannot shadow the canonical benchmark/ definition.  Historical bug
+        # (FruitsOrangesOnPlateTask, 2026-05-07): both
+        # `tasks/test_tasks/fruits_oranges_on_plate.py` (episode_length_s=800)
+        # and `tasks/benchmark/fruits_oranges_on_plate.py` (episode_length_s=90)
+        # exposed the same class name. Without a subfolder filter, os.walk's
+        # arbitrary order picked the test_tasks variant in some images,
+        # causing 7680-step runs against a 1350-step metadata cap.
+        from robolab.constants import DEFAULT_TASK_SUBFOLDERS  # noqa: PLC0415
+        all_task_files = find_task_files(str(task_dir), subfolders=DEFAULT_TASK_SUBFOLDERS)
 
         for candidate_file in all_task_files:
             try:

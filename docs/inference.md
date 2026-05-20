@@ -9,7 +9,7 @@ RoboLab uses a **server-client architecture**: your model runs as a standalone s
 | Pi0 / Pi0-fast / Pi05 | `Pi0DroidJointposClient` | WebSocket (OpenPI) | 8000 | `openpi-client` |
 | GR00T | `GR00TDroidJointposClient` | ZMQ | 5555 | `zmq`, `msgpack` |
 
-Concrete clients live in the top-level `robolab_policy_client/` package (sibling to `robolab/`, installed together). They all inherit from the `InferenceClient` ABC in `robolab/eval/base_client.py`:
+Concrete clients live under `policies/<policy>/client.py` (sibling to `robolab/`, installed together). They all inherit from the `InferenceClient` ABC in `robolab/eval/base_client.py`:
 
 ```python
 from robolab.eval import InferenceClient
@@ -23,16 +23,12 @@ class InferenceClient(ABC):
     # Provided by the base: infer(), reset(), close(), chunking state.
 ```
 
-The `create_client(name, **kwargs)` factory looks a backend up in
-`POLICY_REGISTRY` and constructs it with signature-filtered kwargs:
+Each runner script under `policies/<policy>/run.py` imports its client class directly and constructs it inline — there is no central registry or factory:
 
 ```python
-from robolab.eval import create_client
+from policies.pi0_family.client import Pi0DroidJointposClient
 
-client = create_client("pi0", remote_host="localhost", remote_port=8000)
-
-# Or import a client class directly from the top-level package:
-from robolab_policy_client import Pi0DroidJointposClient
+client = Pi0DroidJointposClient(remote_host="localhost", remote_port=8000, policy_variant="pi05")
 ```
 
 For writing your own inference client, see [Evaluating a New Policy](policy.md).
@@ -89,19 +85,19 @@ XLA_PYTHON_CLIENT_MEM_FRACTION=0.5 uv run scripts/serve_policy.py policy:checkpo
 
 ```bash
 cd robolab
-uv run python examples/policy/run_eval.py --policy pi05 --headless
+uv run python policies/pi0_family/run.py --policy pi05 --headless
 ```
 
 The default connection is `localhost:8000`. To change:
 ```bash
-uv run python examples/policy/run_eval.py --policy pi05 --remote-host <HOST> --remote-port <PORT>
+uv run python policies/pi0_family/run.py --policy pi05 --remote-host <HOST> --remote-port <PORT>
 ```
 
 ---
 
 ## GR00T N1.6
 
-RoboLab ships a built-in GR00T inference client (`robolab_policy_client/gr00t.py`) that communicates via ZMQ.
+RoboLab ships a built-in GR00T inference client (`policies/gr00t/client.py`) that communicates via ZMQ.
 
 ### Install the server
 
@@ -136,31 +132,33 @@ uv run python gr00t/eval/run_gr00t_server.py \
 
 ```bash
 cd robolab
-uv run python examples/policy/run_eval.py --policy gr00t --remote-host 0.0.0.0 --remote-port 5555 --headless
+uv run python policies/gr00t/run.py --remote-host 0.0.0.0 --remote-port 5555 --headless
 ```
 
 ---
 
 ## Common CLI Options
 
-For the full CLI reference, see [Running Environments](environment_run.md#run_evalpy-cli-reference).
+For the full CLI reference, see [Running Environments](environment_run.md#run-cli-reference).
+Use `policies/<policy>/run.py` (e.g. `policies/pi0_family/run.py`, `policies/gr00t/run.py`).
+For pi0-family variants, pass `--policy {pi0,pi0_fast,pi05,paligemma,paligemma_fast}`.
 
 ```bash
 # Run on all benchmark tasks headlessly
-uv run python examples/policy/run_eval.py --policy <policy> --headless
+uv run python policies/<policy>/run.py --headless
 
 # Run on a specific task
-uv run python examples/policy/run_eval.py --policy <policy> --task BananaInBowlTask
+uv run python policies/<policy>/run.py --task BananaInBowlTask
 
 # Run on a tag of tasks
-uv run python examples/policy/run_eval.py --policy <policy> --tag pick_place
+uv run python policies/<policy>/run.py --tag pick_place
 
 # Run multiple runs per task (total episodes = num_runs * num_envs)
-uv run python examples/policy/run_eval.py --policy <policy> --headless --num-runs 5 --num_envs 2
+uv run python policies/<policy>/run.py --headless --num-runs 5 --num_envs 2
 
 # Resume a previous run
-uv run python examples/policy/run_eval.py --policy <policy> --headless --output-folder-name my_previous_run
+uv run python policies/<policy>/run.py --headless --output-folder-name my_previous_run
 
 # Enable subtask checking
-uv run python examples/policy/run_eval.py --policy <policy> --headless --enable-subtask
+uv run python policies/<policy>/run.py --headless --enable-subtask
 ```

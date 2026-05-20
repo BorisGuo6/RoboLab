@@ -513,9 +513,9 @@ def expand_folder_patterns(
         if matches:
             if len(matches) > 1 or matches[0] != full_pattern:
                 pattern_expanded = True
-            folders.extend(matches)
+            folders.extend(os.path.abspath(m) for m in matches)
         else:
-            folders.append(full_pattern)
+            folders.append(os.path.abspath(full_pattern))
 
     seen: set[str] = set()
     unique: list[str] = []

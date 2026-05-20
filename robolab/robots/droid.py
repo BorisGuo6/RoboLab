@@ -9,17 +9,32 @@ import numpy as np
 import torch
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg
+from isaaclab.controllers.differential_ik_cfg import DifferentialIKControllerCfg
 from isaaclab.envs import ManagerBasedRLEnv
-from isaaclab.envs.mdp.actions.actions_cfg import BinaryJointPositionActionCfg
+from isaaclab.envs.mdp.actions.actions_cfg import (
+    BinaryJointPositionActionCfg,
+    DifferentialInverseKinematicsActionCfg,
+)
 from isaaclab.envs.mdp.actions.binary_joint_actions import BinaryJointPositionAction
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import SceneEntityCfg
+from isaaclab.markers.config import FRAME_MARKER_CFG
 from isaaclab.sensors import TiledCameraCfg
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import FrameTransformerCfg, OffsetCfg
 from isaaclab.utils import configclass, noise
 
 from robolab.constants import ROBOTS_DIR
+
+# Offset of the end-effector control frame relative to base_link. Used by:
+#   - DroidCfg.frames "eef_frame" (FrameTransformer publishes this pose for downstream code)
+#   - examples/run_abs_ik_demo.py (converts eef_frame targets → base_link IK actions)
+# Kept here so all code agrees on what eef_frame is.
+EEF_OFFSET_POS: tuple[float, float, float] = (0.0, 0.0, 0.0)
+EEF_OFFSET_ROT: tuple[float, float, float, float] = (0.5, -0.5, 0.5, -0.5)
+
+_frame_marker_cfg = FRAME_MARKER_CFG.replace(prim_path="/Visuals/TF")
+_frame_marker_cfg.markers["frame"].scale = (0.05, 0.05, 0.05)
 
 _WRIST_CAM = TiledCameraCfg(
     # Deliberately named wrist_cam (not wrist_camera) to avoid collision with the
@@ -112,20 +127,31 @@ class DroidCfg:
 
     wrist_cam = _WRIST_CAM
 
-    # NOTE: FrameTransformer disabled - using articulation body state for EE pose instead (faster)
-    # frames = FrameTransformerCfg(
-    #     prim_path="{ENV_REGEX_NS}/robot/panda_link0",
-    #     debug_vis=False,
-    #     target_frames=[
-    #         FrameTransformerCfg.FrameCfg(
-    #             prim_path="{ENV_REGEX_NS}/robot/Gripper/Robotiq_2F_85/base_link",
-    #             name="end_effector",
-    #             offset=OffsetCfg(
-    #                 pos=[0.0, 0.0, 0.0],
-    #             ),
-    #         ),
-    #     ],
-    # )
+    # Per-link frame visualization for debugging. EE pose still comes from articulation
+    # body state (faster); this sensor is purely for debug rendering. Flip debug_vis to
+    # True to render RGB axes at every tracked link in the viewport.
+    frames = FrameTransformerCfg(
+        prim_path="{ENV_REGEX_NS}/robot/panda_link0",
+        debug_vis=False,
+        visualizer_cfg=_frame_marker_cfg,
+        target_frames=[
+            FrameTransformerCfg.FrameCfg(
+                prim_path=f"{{ENV_REGEX_NS}}/robot/panda_link{i}",
+                name=f"panda_link{i}",
+            )
+            for i in range(8)
+        ] + [
+            FrameTransformerCfg.FrameCfg(
+                prim_path="{ENV_REGEX_NS}/robot/Gripper/Robotiq_2F_85/base_link",
+                name="gripper_base",
+            ),
+            FrameTransformerCfg.FrameCfg(
+                prim_path="{ENV_REGEX_NS}/robot/Gripper/Robotiq_2F_85/base_link",
+                name="eef_frame",
+                offset=OffsetCfg(pos=EEF_OFFSET_POS, rot=EEF_OFFSET_ROT),
+            ),
+        ],
+    )
 
 
 @configclass
@@ -191,13 +217,13 @@ def gripper_pos(
 def ee_pos(
     env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ):
-    """Returns the end effector position (x, y, z) in the world frame."""
+    """Returns the end effector position (x, y, z) in the env-local frame."""
     robot = env.scene[asset_cfg.name]
     # Get the body index for the end effector link
     ee_body_name = "base_link"  # Robotiq gripper base link
     body_idx = robot.data.body_names.index(ee_body_name)
     # Return position (shape: [num_envs, 3])
-    return robot.data.body_pos_w[:, body_idx, :]
+    return robot.data.body_pos_w[:, body_idx, :] - env.scene.env_origins[:, 0:3]
 
 
 def ee_quat(
@@ -210,6 +236,20 @@ def ee_quat(
     body_idx = robot.data.body_names.index(ee_body_name)
     # Return quaternion (shape: [num_envs, 4])
     return robot.data.body_quat_w[:, body_idx, :]
+
+
+def eef_pos(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("frames")):
+    """Returns the eef_frame position (x, y, z) in the env-local frame."""
+    frames = env.scene[asset_cfg.name]
+    idx = frames.data.target_frame_names.index("eef_frame")
+    return frames.data.target_pos_w[:, idx, :] - env.scene.env_origins[:, 0:3]
+
+
+def eef_quat(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("frames")):
+    """Returns the eef_frame orientation as quaternion (w, x, y, z) in the world frame."""
+    frames = env.scene[asset_cfg.name]
+    idx = frames.data.target_frame_names.index("eef_frame")
+    return frames.data.target_quat_w[:, idx, :]
 
 ########################################################
 # Actions
@@ -263,6 +303,77 @@ class DroidJointPositionActionCfg:
         close_command_expr={"finger_joint": np.pi / 4},
     )
 
+
+@configclass
+class DroidIKActionCfg:
+    """Absolute end-effector pose control via differential IK.
+
+    Tracks base_link directly (no body_offset rotation). If a policy wants to
+    command poses in eef_frame's coordinates, it must convert before sending:
+    target_base_quat = target_eef_quat ⊗ R_eef_in_base⁻¹. We don't use
+    body_offset.rot because IsaacLab's DifferentialIK computes the orientation
+    error in root frame but multiplies the rotational Jacobian by R_offset,
+    leaving the bases inconsistent — the IK reaches position cleanly, then
+    drifts in orientation and diverges. (See run_abs_ik_demo.py for the
+    command-side conversion.) The relative IK path is unaffected, so
+    DroidRelIKActionCfg keeps body_offset.rot.
+
+    Note:
+        if self.cfg.command_type == "position", action_dim = 3, (x, y, z)
+        if self.cfg.command_type == "pose" and self.cfg.use_relative_mode, action_dim = 6, (dx, dy, dz, droll, dpitch, dyaw)
+        if self.cfg.command_type == "pose" and not self.cfg.use_relative_mode, action_dim = 7, (x, y, z, qw, qx, qy, qz)
+    """
+    arm_action = DifferentialInverseKinematicsActionCfg(
+        asset_name="robot",
+        joint_names=["panda_joint.*"],
+        body_name="base_link",  # Robotiq 2F-85 base flange (gripper mount); matches ee_pos/ee_quat helpers
+        controller=DifferentialIKControllerCfg(command_type="pose", use_relative_mode=False, ik_method="dls"),
+        scale=1.0,
+        body_offset=DifferentialInverseKinematicsActionCfg.OffsetCfg(pos=[0.0, 0.0, 0.0]),
+        # Robotiq 2F-85 max height base flange -> fingertip is 162.8mm (per Robotiq spec).
+        # Uncomment to control the fingertip plane instead of the base flange.
+        # body_offset=DifferentialInverseKinematicsActionCfg.OffsetCfg(pos=[0.0, 0.0, 0.1628]),
+    )
+
+    finger_joint = BinaryJointPositionZeroToOneActionCfg(
+        asset_name="robot",
+        joint_names=["finger_joint"],
+        open_command_expr={"finger_joint": 0.0},
+        close_command_expr={"finger_joint": np.pi / 4},
+    )
+
+
+@configclass
+class DroidRelIKActionCfg:
+    """Relative end-effector pose control via differential IK.
+
+    Note:
+        if self.cfg.command_type == "position", action_dim = 3, (x, y, z)
+        if self.cfg.command_type == "pose" and self.cfg.use_relative_mode, action_dim = 6, (dx, dy, dz, droll, dpitch, dyaw)
+        if self.cfg.command_type == "pose" and not self.cfg.use_relative_mode, action_dim = 7, (x, y, z, qw, qx, qy, qz)
+    """
+    arm_action = DifferentialInverseKinematicsActionCfg(
+        asset_name="robot",
+        joint_names=["panda_joint.*"],
+        body_name="base_link",  # Robotiq 2F-85 base flange (gripper mount); matches ee_pos/ee_quat helpers
+        controller=DifferentialIKControllerCfg(command_type="pose", use_relative_mode=True, ik_method="dls"),
+        scale=0.5,
+        body_offset=DifferentialInverseKinematicsActionCfg.OffsetCfg(
+            pos=[0.0, 0.0, 0.0],
+            # rot=(0.5, -0.5, 0.5, -0.5),  # Match eef_frame: rotates base_link to the EE control frame.
+        ),
+        # Robotiq 2F-85 max height base flange -> fingertip is 162.8mm (per Robotiq spec).
+        # Uncomment to control the fingertip plane instead of the base flange.
+        # body_offset=DifferentialInverseKinematicsActionCfg.OffsetCfg(pos=[0.0, 0.0, 0.1628]),
+    )
+
+    finger_joint = BinaryJointPositionZeroToOneActionCfg(
+        asset_name="robot",
+        joint_names=["finger_joint"],
+        open_command_expr={"finger_joint": 0.0},
+        close_command_expr={"finger_joint": np.pi / 4},
+    )
+
 ########################################################
 # Observations
 ########################################################
@@ -272,8 +383,11 @@ class ProprioceptionObservationCfg(ObsGroup):
     gripper_pos = ObsTerm(
         func=gripper_pos, noise=noise.GaussianNoiseCfg(std=0.05), clip=(0, 1)
     )
+    # ee_*: base_link (gripper mount flange). eef_*: eef_frame (EE control frame, R_offset rotated).
     ee_pos = ObsTerm(func=ee_pos)
     ee_quat = ObsTerm(func=ee_quat)
+    eef_pos = ObsTerm(func=eef_pos)
+    eef_quat = ObsTerm(func=eef_quat)
 
     def __post_init__(self) -> None:
         self.enable_corruption = False # must include

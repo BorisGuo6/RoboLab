@@ -19,7 +19,7 @@ Usage:
     $ python run_recorded.py --task MyTask --headless
 
 Requirements:
-    - Recorded data must exist at: examples/demo/recorded_data/<task>/data.hdf5
+    - Recorded data must exist at: examples/recorded_data/<task>/data.hdf5
     - Task must be registered in the environment factory
 
 Output:
@@ -56,7 +56,7 @@ simulation_app = app_launcher.app
 
 from episodes import run_prerecorded_episode_hdf5 # noqa
 from robolab.core.environments.runtime import create_env, end_episode # noqa
-from robolab.registrations.droid_jointpos.auto_env_registrations import auto_register_droid_envs # noqa
+from robolab.registrations.droid.auto_env_registrations_jointpos import auto_register_droid_envs # noqa
 from robolab.core.environments.factory import get_envs # noqa
 from robolab.constants import get_timestamp # noqa
 from robolab.core.logging.results import dump_results_to_file, get_all_env_events, summarize_experiment_results # noqa
