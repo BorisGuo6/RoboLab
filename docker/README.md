@@ -29,7 +29,7 @@ separate layer for better caching — code changes don't invalidate asset layers
 ## Run
 
 ```bash
-# Interactive shell
+# Interactive shell with display/GUI forwarding (X11, cache + repo mounts)
 ./docker/run_docker.sh
 
 # Or specify a custom tag
